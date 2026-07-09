@@ -1,0 +1,7 @@
+build/
+build-*/
+dist/
+.DS_Store
+*.clap.dSYM/
+rnbo_exports/*
+!rnbo_exports/README.md
