@@ -5,3 +5,5 @@ dist/
 *.clap.dSYM/
 rnbo_exports/*
 !rnbo_exports/README.md
+max_patches/*
+!max_patches/README.md

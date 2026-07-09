@@ -21,13 +21,26 @@
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <string>
+#include <utility>
 #include <vector>
+
+#ifndef S3G_RNBO_PLUGIN_ID
+#define S3G_RNBO_PLUGIN_ID "org.s3g.s3g-rnbo-clap.8ch-passthru"
+#endif
+#ifndef S3G_RNBO_PLUGIN_NAME
+#define S3G_RNBO_PLUGIN_NAME "s3g RNBO 8ch Passthru"
+#endif
+#ifndef S3G_RNBO_PLUGIN_DESCRIPTION
+#define S3G_RNBO_PLUGIN_DESCRIPTION "Eight-channel CLAP wrapper test for an RNBO C++ passthrough export."
+#endif
 
 namespace {
 
 constexpr uint32_t kInputChannels = S3G_RNBO_INPUT_CHANNELS;
 constexpr uint32_t kOutputChannels = S3G_RNBO_OUTPUT_CHANNELS;
 constexpr uint32_t kStateVersion = 1;
+constexpr clap_id kRnboParamBase = 1000;
 
 enum ParamId : clap_id {
     kGain = 1,
@@ -45,6 +58,24 @@ struct SavedState {
     uint32_t version = kStateVersion;
     Params params {};
 };
+
+struct StateHeader {
+    uint32_t version = kStateVersion;
+    uint32_t count = 0;
+};
+
+#if S3G_HAS_RNBO_EXPORT
+struct RnboParam {
+    clap_id id = CLAP_INVALID_ID;
+    RNBO::ParameterIndex index = 0;
+    std::string name;
+    std::string module = "RNBO";
+    double min = 0.0;
+    double max = 1.0;
+    double defaultValue = 0.0;
+    int steps = 0;
+};
+#endif
 
 struct RnboProcessor {
     double sampleRate = 48000.0;
@@ -112,8 +143,7 @@ struct RnboProcessor {
 #if S3G_HAS_RNBO_EXPORT
     void processRnbo(const clap_audio_buffer_t& input,
                      const clap_audio_buffer_t& output,
-                     uint32_t frames,
-                     const Params& params)
+                     uint32_t frames)
     {
         const uint32_t n = std::min(frames, maxBlock);
         for (uint32_t ch = 0; ch < kInputChannels; ++ch) {
@@ -131,15 +161,9 @@ struct RnboProcessor {
 
         rnbo.process(inputPtrs.data(), kInputChannels, outputPtrs.data(), kOutputChannels, n);
 
-        gainSmooth = s3g::rnbo_lab::smoothParam(gainSmooth, params.gain);
-        mixSmooth = s3g::rnbo_lab::smoothParam(mixSmooth, params.mix);
-        outSmooth = s3g::rnbo_lab::smoothParam(outSmooth, params.output);
-        const float gain = std::pow(10.0f, (gainSmooth * 36.0f - 24.0f) / 20.0f);
         for (uint32_t ch = 0; ch < output.channel_count; ++ch) {
             for (uint32_t i = 0; i < n; ++i) {
-                const float dry = ch < input.channel_count && input.data32 && input.data32[ch] ? input.data32[ch][i] : 0.0f;
-                const float wet = ch < kOutputChannels ? static_cast<float>(outputPtrs[ch][i]) * gain : 0.0f;
-                const float value = (dry + (wet - dry) * s3g::rnbo_lab::clamp01(mixSmooth)) * outSmooth;
+                const float value = ch < kOutputChannels ? static_cast<float>(outputPtrs[ch][i]) : 0.0f;
                 if (output.data32 && output.data32[ch]) output.data32[ch][i] = value;
                 if (output.data64 && output.data64[ch]) output.data64[ch][i] = static_cast<double>(value);
             }
@@ -153,6 +177,9 @@ struct Plugin {
     const clap_host_t* host = nullptr;
     Params params {};
     RnboProcessor processor {};
+#if S3G_HAS_RNBO_EXPORT
+    std::vector<RnboParam> rnboParams;
+#endif
     std::atomic<float> peak { 0.0f };
 #if defined(__APPLE__)
     void* guiView = nullptr;
@@ -161,14 +188,70 @@ struct Plugin {
 
 Plugin* self(const clap_plugin_t* plugin) { return static_cast<Plugin*>(plugin->plugin_data); }
 
+#if S3G_HAS_RNBO_EXPORT
+void discoverRnboParams(Plugin& p)
+{
+    p.rnboParams.clear();
+    const auto count = p.processor.rnbo.getNumParameters();
+    p.rnboParams.reserve(static_cast<size_t>(count));
+    for (RNBO::ParameterIndex i = 0; i < count; ++i) {
+        RNBO::ParameterInfo rnboInfo {};
+        p.processor.rnbo.getParameterInfo(i, &rnboInfo);
+        if (!rnboInfo.visible) continue;
+
+        RnboParam param {};
+        param.id = kRnboParamBase + static_cast<clap_id>(i);
+        param.index = i;
+        const char* displayName = rnboInfo.displayName && rnboInfo.displayName[0] ? rnboInfo.displayName : nullptr;
+        const char* name = displayName ? displayName : p.processor.rnbo.getParameterName(i);
+        param.name = name && name[0] ? name : p.processor.rnbo.getParameterId(i);
+        param.min = rnboInfo.min;
+        param.max = rnboInfo.max;
+        param.defaultValue = rnboInfo.initialValue;
+        param.steps = rnboInfo.steps;
+        p.rnboParams.push_back(std::move(param));
+    }
+}
+
+RnboParam* findRnboParam(Plugin& p, clap_id id)
+{
+    for (auto& param : p.rnboParams) {
+        if (param.id == id) return &param;
+    }
+    return nullptr;
+}
+
+const RnboParam* findRnboParam(const Plugin& p, clap_id id)
+{
+    for (const auto& param : p.rnboParams) {
+        if (param.id == id) return &param;
+    }
+    return nullptr;
+}
+#endif
+
 float clampParam(clap_id id, double value)
 {
+#if S3G_HAS_RNBO_EXPORT
+    (void)id;
+    return static_cast<float>(value);
+#else
     if (id == kGain || id == kMix || id == kOutput) return static_cast<float>(std::clamp(value, 0.0, 1.0));
     return static_cast<float>(value);
+#endif
 }
 
 void setParam(Plugin& p, clap_id id, double value)
 {
+#if S3G_HAS_RNBO_EXPORT
+    if (auto* param = findRnboParam(p, id)) {
+        const double constrained = std::clamp(value, param->min, param->max);
+        p.processor.rnbo.setParameterValue(param->index, constrained);
+#if defined(__APPLE__)
+        if (p.guiView) [static_cast<NSView*>(p.guiView) setNeedsDisplay:YES];
+#endif
+    }
+#else
     const float v = clampParam(id, value);
     if (id == kGain) p.params.gain = v;
     else if (id == kMix) p.params.mix = v;
@@ -177,14 +260,22 @@ void setParam(Plugin& p, clap_id id, double value)
 #if defined(__APPLE__)
     if (p.guiView) [static_cast<NSView*>(p.guiView) setNeedsDisplay:YES];
 #endif
+#endif
 }
 
-double getParam(const Plugin& p, clap_id id)
+double getParam(Plugin& p, clap_id id)
 {
+#if S3G_HAS_RNBO_EXPORT
+    if (const auto* param = findRnboParam(p, id)) {
+        return p.processor.rnbo.getParameterValue(param->index);
+    }
+    return 0.0;
+#else
     if (id == kGain) return p.params.gain;
     if (id == kMix) return p.params.mix;
     if (id == kOutput) return p.params.output;
     return 0.0;
+#endif
 }
 
 void readEvents(Plugin& p, const clap_input_events_t* in)
@@ -231,12 +322,13 @@ clap_process_status process(const clap_plugin_t* plugin, const clap_process_t* p
 {
     auto* p = self(plugin);
     readEvents(*p, proc->in_events);
-    if (proc->audio_inputs_count == 0 || proc->audio_outputs_count == 0) return CLAP_PROCESS_CONTINUE;
-    const auto& input = proc->audio_inputs[0];
+    if (proc->audio_outputs_count == 0) return CLAP_PROCESS_CONTINUE;
+    const clap_audio_buffer_t emptyInput {};
+    const auto& input = proc->audio_inputs_count > 0 ? proc->audio_inputs[0] : emptyInput;
     const auto& output = proc->audio_outputs[0];
     float blockPeak = 0.0f;
 #if S3G_HAS_RNBO_EXPORT
-    p->processor.processRnbo(input, output, proc->frames_count, p->params);
+    p->processor.processRnbo(input, output, proc->frames_count);
     for (uint32_t ch = 0; ch < std::min(output.channel_count, kOutputChannels); ++ch) {
         if (!output.data32 || !output.data32[ch]) continue;
         for (uint32_t i = 0; i < proc->frames_count; ++i) blockPeak = std::max(blockPeak, std::fabs(output.data32[ch][i]));
@@ -255,7 +347,10 @@ clap_process_status process(const clap_plugin_t* plugin, const clap_process_t* p
 
 void onMainThread(const clap_plugin_t*) {}
 
-uint32_t audioPortsCount(const clap_plugin_t*, bool) { return 1; }
+uint32_t audioPortsCount(const clap_plugin_t*, bool isInput)
+{
+    return isInput ? (kInputChannels > 0 ? 1u : 0u) : (kOutputChannels > 0 ? 1u : 0u);
+}
 
 bool audioPortsGet(const clap_plugin_t*, uint32_t index, bool isInput, clap_audio_port_info_t* info)
 {
@@ -264,7 +359,7 @@ bool audioPortsGet(const clap_plugin_t*, uint32_t index, bool isInput, clap_audi
     std::snprintf(info->name, sizeof(info->name), "%s", isInput ? "RNBO In" : "RNBO Out");
     info->flags = CLAP_AUDIO_PORT_IS_MAIN;
     info->channel_count = isInput ? kInputChannels : kOutputChannels;
-    info->port_type = (info->channel_count == 2) ? CLAP_PORT_STEREO : CLAP_PORT_SURROUND;
+    info->port_type = (info->channel_count == 2) ? CLAP_PORT_STEREO : nullptr;
     info->in_place_pair = CLAP_INVALID_ID;
     return true;
 }
@@ -284,35 +379,71 @@ clap_param_info_t makeParam(clap_id id, const char* name, double def)
     return info;
 }
 
-uint32_t paramsCount(const clap_plugin_t*) { return 3; }
-
-bool paramsGetInfo(const clap_plugin_t*, uint32_t index, clap_param_info_t* info)
+uint32_t paramsCount(const clap_plugin_t* plugin)
 {
+#if S3G_HAS_RNBO_EXPORT
+    return static_cast<uint32_t>(self(plugin)->rnboParams.size());
+#else
+    return 3;
+#endif
+}
+
+bool paramsGetInfo(const clap_plugin_t* plugin, uint32_t index, clap_param_info_t* info)
+{
+#if S3G_HAS_RNBO_EXPORT
+    auto* p = self(plugin);
+    if (!info || index >= p->rnboParams.size()) return false;
+    const auto& param = p->rnboParams[index];
+    info->id = param.id;
+    info->flags = CLAP_PARAM_IS_AUTOMATABLE;
+    info->min_value = param.min;
+    info->max_value = param.max;
+    info->default_value = param.defaultValue;
+    if (param.steps > 0) info->flags |= CLAP_PARAM_IS_STEPPED;
+    std::snprintf(info->name, sizeof(info->name), "%s", param.name.c_str());
+    std::snprintf(info->module, sizeof(info->module), "%s", param.module.c_str());
+    return true;
+#else
     if (!info || index >= 3) return false;
     if (index == 0) *info = makeParam(kGain, "Gain", 0.50);
     else if (index == 1) *info = makeParam(kMix, "Mix", 1.0);
     else *info = makeParam(kOutput, "Output", 1.0);
     return true;
+#endif
 }
 
 bool paramsGetValue(const clap_plugin_t* plugin, clap_id id, double* value)
 {
     if (!value) return false;
+#if S3G_HAS_RNBO_EXPORT
+    if (!findRnboParam(*self(plugin), id)) return false;
+#else
+    if (id != kGain && id != kMix && id != kOutput) return false;
+#endif
     *value = getParam(*self(plugin), id);
     return true;
 }
 
-bool paramsValueToText(const clap_plugin_t*, clap_id, double value, char* display, uint32_t size)
+bool paramsValueToText(const clap_plugin_t* plugin, clap_id id, double value, char* display, uint32_t size)
 {
     if (!display || size == 0) return false;
+#if S3G_HAS_RNBO_EXPORT
+    if (!findRnboParam(*self(plugin), id)) return false;
+#endif
     std::snprintf(display, size, "%.3f", value);
     return true;
 }
 
-bool paramsTextToValue(const clap_plugin_t*, clap_id id, const char* display, double* value)
+bool paramsTextToValue(const clap_plugin_t* plugin, clap_id id, const char* display, double* value)
 {
     if (!display || !value) return false;
+#if S3G_HAS_RNBO_EXPORT
+    const auto* param = findRnboParam(*self(plugin), id);
+    if (!param) return false;
+    *value = std::clamp(std::atof(display), param->min, param->max);
+#else
     *value = clampParam(id, std::atof(display));
+#endif
     return true;
 }
 
@@ -349,17 +480,45 @@ bool readFull(const clap_istream_t* stream, void* data, size_t size)
 
 bool stateSave(const clap_plugin_t* plugin, const clap_ostream_t* stream)
 {
+#if S3G_HAS_RNBO_EXPORT
+    auto* p = self(plugin);
+    StateHeader header {};
+    header.count = static_cast<uint32_t>(p->rnboParams.size());
+    if (!stream || !stream->write || !writeFull(stream, &header, sizeof(header))) return false;
+    for (const auto& param : p->rnboParams) {
+        const double value = p->processor.rnbo.getParameterValue(param.index);
+        if (!writeFull(stream, &value, sizeof(value))) return false;
+    }
+    return true;
+#else
     SavedState state {};
     state.params = self(plugin)->params;
     return stream && stream->write && writeFull(stream, &state, sizeof(state));
+#endif
 }
 
 bool stateLoad(const clap_plugin_t* plugin, const clap_istream_t* stream)
 {
+#if S3G_HAS_RNBO_EXPORT
+    auto* p = self(plugin);
+    StateHeader header {};
+    if (!stream || !stream->read || !readFull(stream, &header, sizeof(header)) || header.version != kStateVersion) return false;
+    const uint32_t n = std::min<uint32_t>(header.count, static_cast<uint32_t>(p->rnboParams.size()));
+    for (uint32_t i = 0; i < header.count; ++i) {
+        double value = 0.0;
+        if (!readFull(stream, &value, sizeof(value))) return false;
+        if (i < n) p->processor.rnbo.setParameterValue(p->rnboParams[i].index, value);
+    }
+#if defined(__APPLE__)
+    if (p->guiView) [static_cast<NSView*>(p->guiView) setNeedsDisplay:YES];
+#endif
+    return true;
+#else
     SavedState state {};
     if (!stream || !stream->read || !readFull(stream, &state, sizeof(state)) || state.version != kStateVersion) return false;
     self(plugin)->params = state.params;
     return true;
+#endif
 }
 
 const clap_plugin_state_t stateExt { stateSave, stateLoad };
@@ -376,6 +535,23 @@ NSColor* uiColor(int rgb, double alpha = 1.0)
                                      alpha:alpha];
 }
 
+constexpr uint32_t kGuiWidth = 620;
+constexpr uint32_t kGuiFallbackHeight = 320;
+constexpr CGFloat kGuiParamStartY = 84;
+constexpr CGFloat kGuiParamRowH = 44;
+
+uint32_t preferredGuiHeight(const Plugin* p)
+{
+#if S3G_HAS_RNBO_EXPORT
+    const size_t rows = p ? (p->rnboParams.size() + 1) / 2 : 0;
+    const auto height = static_cast<uint32_t>(kGuiParamStartY + rows * kGuiParamRowH + 104);
+    return std::max(kGuiFallbackHeight, height);
+#else
+    (void)p;
+    return kGuiFallbackHeight;
+#endif
+}
+
 @interface S3GRnboTestView : NSView {
 @private
     void* _plugin;
@@ -387,7 +563,7 @@ NSColor* uiColor(int rgb, double alpha = 1.0)
 @implementation S3GRnboTestView
 - (id)initWithPlugin:(void*)plugin
 {
-    if ((self = [super initWithFrame:NSMakeRect(0, 0, 620, 320)])) {
+    if ((self = [super initWithFrame:NSMakeRect(0, 0, kGuiWidth, preferredGuiHeight(static_cast<Plugin*>(plugin)))])) {
         _plugin = plugin;
         _drag = -1;
     }
@@ -410,6 +586,27 @@ NSColor* uiColor(int rgb, double alpha = 1.0)
     NSRectFill(NSMakeRect(track.origin.x + track.size.width * value - 1.5, track.origin.y - 2, 3, 14));
     [[NSString stringWithFormat:@"%.3f", value] drawAtPoint:NSMakePoint(410, y - 2) withAttributes:attrs];
 }
+- (void)drawCompactSlider:(NSString*)name value:(double)value frame:(NSRect)frame attrs:(NSDictionary*)attrs dim:(NSDictionary*)dim
+{
+    [name drawAtPoint:NSMakePoint(frame.origin.x, frame.origin.y) withAttributes:dim];
+    NSRect track = NSMakeRect(frame.origin.x, frame.origin.y + 18, frame.size.width - 54, 8);
+    [uiColor(0x111111) setFill];
+    NSRectFill(track);
+    [uiColor(0x626262) setStroke];
+    NSFrameRect(track);
+    NSRect fill = NSInsetRect(track, 1, 1);
+    fill.size.width *= static_cast<CGFloat>(std::clamp(value, 0.0, 1.0));
+    [uiColor(0xa8a8a8) setFill];
+    NSRectFill(fill);
+    [uiColor(0xe8e8e8) setFill];
+    NSRectFill(NSMakeRect(track.origin.x + track.size.width * value - 1.5, track.origin.y - 2, 3, 12));
+    [[NSString stringWithFormat:@"%.3f", value] drawAtPoint:NSMakePoint(frame.origin.x + frame.size.width - 45, frame.origin.y + 13) withAttributes:attrs];
+}
+- (double)valueForPoint:(NSPoint)pt frame:(NSRect)frame
+{
+    NSRect track = NSMakeRect(frame.origin.x, frame.origin.y + 18, frame.size.width - 54, 8);
+    return std::clamp((pt.x - track.origin.x) / track.size.width, 0.0, 1.0);
+}
 - (void)drawRect:(NSRect)dirtyRect
 {
     (void)dirtyRect;
@@ -418,40 +615,95 @@ NSColor* uiColor(int rgb, double alpha = 1.0)
     NSRectFill(self.bounds);
     NSDictionary* text = @{ NSFontAttributeName:[NSFont fontWithName:@"Menlo" size:10] ?: [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular], NSForegroundColorAttributeName:uiColor(0xf0f0f0) };
     NSDictionary* dim = @{ NSFontAttributeName:[NSFont fontWithName:@"Menlo" size:10] ?: [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular], NSForegroundColorAttributeName:uiColor(0x9e9e9e) };
-    [@"s3g RNBO 8ch Passthru" drawAtPoint:NSMakePoint(18, 16) withAttributes:text];
+    [[NSString stringWithUTF8String:S3G_RNBO_PLUGIN_NAME] drawAtPoint:NSMakePoint(18, 16) withAttributes:text];
     [[NSString stringWithFormat:@"PK %.3f", p->peak.load(std::memory_order_relaxed)] drawAtPoint:NSMakePoint(520, 16) withAttributes:dim];
+#if S3G_HAS_RNBO_EXPORT
+    const CGFloat rows = static_cast<CGFloat>((p->rnboParams.size() + 1) / 2);
+    const CGFloat panelHeight = std::max<CGFloat>(210, kGuiParamStartY + rows * kGuiParamRowH + 56 - 48);
+#else
+    const CGFloat panelHeight = 210;
+#endif
     [uiColor(0x1d1d1d) setFill];
-    NSRectFill(NSMakeRect(24, 48, 572, 210));
+    NSRectFill(NSMakeRect(24, 48, 572, panelHeight));
     [uiColor(0x636363) setStroke];
-    NSFrameRect(NSMakeRect(24, 48, 572, 210));
+    NSFrameRect(NSMakeRect(24, 48, 572, panelHeight));
     [uiColor(0x131313) setFill];
     NSRectFill(NSMakeRect(24, 48, 572, 22));
     [uiColor(0xd1d1d1) setFill];
     NSRectFill(NSMakeRect(24, 48, 572, 2));
     [@"ENGINE" drawAtPoint:NSMakePoint(42, 54) withAttributes:text];
+#if S3G_HAS_RNBO_EXPORT
+    const CGFloat colW = 260;
+    const CGFloat startX = 42;
+    const CGFloat startY = kGuiParamStartY;
+    const CGFloat controlsBottom = startY + rows * kGuiParamRowH;
+    for (size_t i = 0; i < p->rnboParams.size(); ++i) {
+        const size_t col = i % 2;
+        const size_t row = i / 2;
+        NSRect frame = NSMakeRect(startX + col * 272, startY + row * kGuiParamRowH, colW, 34);
+        const auto& param = p->rnboParams[i];
+        const double raw = p->processor.rnbo.getParameterValue(param.index);
+        const double span = param.max - param.min;
+        const double normalized = span > 0.0 ? (raw - param.min) / span : 0.0;
+        NSString* name = [NSString stringWithUTF8String:param.name.c_str()];
+        [self drawCompactSlider:name value:normalized frame:frame attrs:text dim:dim];
+    }
+#else
     [self drawSlider:@"GAIN" value:p->params.gain y:94 attrs:text dim:dim];
     [self drawSlider:@"MIX" value:p->params.mix y:128 attrs:text dim:dim];
     [self drawSlider:@"OUT" value:p->params.output y:162 attrs:text dim:dim];
+#endif
 #if S3G_HAS_RNBO_EXPORT
     NSString* mode = @"RNBO EXPORT: ON";
 #else
     NSString* mode = @"RNBO EXPORT: FALLBACK DSP";
 #endif
+#if S3G_HAS_RNBO_EXPORT
+    const CGFloat metaY = controlsBottom + 18;
+    [mode drawAtPoint:NSMakePoint(42, metaY) withAttributes:dim];
+    [[NSString stringWithFormat:@"IO %u IN / %u OUT", kInputChannels, kOutputChannels] drawAtPoint:NSMakePoint(410, metaY) withAttributes:dim];
+    [[NSString stringWithFormat:@"PARAMS %zu", p->rnboParams.size()] drawAtPoint:NSMakePoint(42, metaY + 18) withAttributes:dim];
+#else
     [mode drawAtPoint:NSMakePoint(42, 214) withAttributes:dim];
     [[NSString stringWithFormat:@"IO %u IN / %u OUT", kInputChannels, kOutputChannels] drawAtPoint:NSMakePoint(410, 214) withAttributes:dim];
+#endif
 }
 - (void)setParamFromPoint:(NSPoint)pt
 {
     auto* p = static_cast<Plugin*>(_plugin);
+#if S3G_HAS_RNBO_EXPORT
+    if (_drag >= 0 && static_cast<size_t>(_drag) < p->rnboParams.size()) {
+        const size_t col = static_cast<size_t>(_drag) % 2;
+        const size_t row = static_cast<size_t>(_drag) / 2;
+        NSRect frame = NSMakeRect(42 + col * 272, kGuiParamStartY + row * kGuiParamRowH, 260, 34);
+        const double normalized = [self valueForPoint:pt frame:frame];
+        const auto& param = p->rnboParams[static_cast<size_t>(_drag)];
+        setParam(*p, param.id, param.min + normalized * (param.max - param.min));
+    }
+#else
     const double n = std::clamp((pt.x - 126.0) / 260.0, 0.0, 1.0);
     if (_drag == 0) setParam(*p, kGain, n);
     else if (_drag == 1) setParam(*p, kMix, n);
     else if (_drag == 2) setParam(*p, kOutput, n);
+#endif
     [self setNeedsDisplay:YES];
 }
 - (void)mouseDown:(NSEvent*)event
 {
     NSPoint pt = [self convertPoint:event.locationInWindow fromView:nil];
+#if S3G_HAS_RNBO_EXPORT
+    auto* p = static_cast<Plugin*>(_plugin);
+    for (size_t i = 0; i < p->rnboParams.size(); ++i) {
+        const size_t col = i % 2;
+        const size_t row = i / 2;
+        NSRect frame = NSMakeRect(42 + col * 272, kGuiParamStartY + row * kGuiParamRowH, 260, 34);
+        if (NSPointInRect(pt, frame)) {
+            _drag = static_cast<int>(i);
+            [self setParamFromPoint:pt];
+            return;
+        }
+    }
+#else
     const CGFloat rows[] = { 94, 128, 162 };
     for (int i = 0; i < 3; ++i) {
         if (NSPointInRect(pt, NSMakeRect(38, rows[i] - 8, 450, 26))) {
@@ -460,9 +712,14 @@ NSColor* uiColor(int rgb, double alpha = 1.0)
             return;
         }
     }
+#endif
 }
 - (void)mouseDragged:(NSEvent*)event { if (_drag >= 0) [self setParamFromPoint:[self convertPoint:event.locationInWindow fromView:nil]]; }
 - (void)mouseUp:(NSEvent*)event { (void)event; _drag = -1; }
+- (void)scrollWheel:(NSEvent*)event
+{
+    (void)event;
+}
 @end
 
 bool guiIsApiSupported(const clap_plugin_t*, const char* api, bool isFloating) { return !isFloating && std::strcmp(api, CLAP_WINDOW_API_COCOA) == 0; }
@@ -470,12 +727,12 @@ bool guiGetPreferredApi(const clap_plugin_t*, const char** api, bool* isFloating
 bool guiCreate(const clap_plugin_t* plugin, const char* api, bool isFloating) { if (!guiIsApiSupported(plugin, api, isFloating)) return false; auto* p = self(plugin); if (!p->guiView) p->guiView = [[S3GRnboTestView alloc] initWithPlugin:p]; return p->guiView != nullptr; }
 void guiDestroy(const clap_plugin_t* plugin) { auto* p = self(plugin); if (p->guiView) { NSView* view = static_cast<NSView*>(p->guiView); [view removeFromSuperview]; [view release]; p->guiView = nullptr; } }
 bool guiSetScale(const clap_plugin_t*, double) { return true; }
-bool guiGetSize(const clap_plugin_t*, uint32_t* w, uint32_t* h) { if (!w || !h) return false; *w = 620; *h = 320; return true; }
+bool guiGetSize(const clap_plugin_t* plugin, uint32_t* w, uint32_t* h) { if (!w || !h) return false; *w = kGuiWidth; *h = preferredGuiHeight(self(plugin)); return true; }
 bool guiCanResize(const clap_plugin_t*) { return false; }
 bool guiGetResizeHints(const clap_plugin_t*, clap_gui_resize_hints_t*) { return false; }
 bool guiAdjustSize(const clap_plugin_t*, uint32_t*, uint32_t*) { return false; }
 bool guiSetSize(const clap_plugin_t* plugin, uint32_t w, uint32_t h) { auto* p = self(plugin); if (!p->guiView) return false; [static_cast<NSView*>(p->guiView) setFrameSize:NSMakeSize(w, h)]; return true; }
-bool guiSetParent(const clap_plugin_t* plugin, const clap_window_t* win) { if (!win || std::strcmp(win->api, CLAP_WINDOW_API_COCOA) != 0 || !win->cocoa) return false; auto* p = self(plugin); if (!p->guiView) return false; NSView* view = static_cast<NSView*>(p->guiView); [static_cast<NSView*>(win->cocoa) addSubview:view]; [view setFrame:NSMakeRect(0, 0, 620, 320)]; return true; }
+bool guiSetParent(const clap_plugin_t* plugin, const clap_window_t* win) { if (!win || std::strcmp(win->api, CLAP_WINDOW_API_COCOA) != 0 || !win->cocoa) return false; auto* p = self(plugin); if (!p->guiView) return false; NSView* view = static_cast<NSView*>(p->guiView); [static_cast<NSView*>(win->cocoa) addSubview:view]; [view setFrame:NSMakeRect(0, 0, kGuiWidth, preferredGuiHeight(p))]; return true; }
 bool guiSetTransient(const clap_plugin_t*, const clap_window_t*) { return false; }
 void guiSuggestTitle(const clap_plugin_t*, const char*) {}
 bool guiShow(const clap_plugin_t* plugin) { auto* p = self(plugin); if (!p->guiView) return false; [static_cast<NSView*>(p->guiView) setHidden:NO]; return true; }
@@ -496,21 +753,26 @@ const void* getExtension(const clap_plugin_t*, const char* id)
 }
 
 const char* const features[] {
+#if S3G_RNBO_INPUT_CHANNELS == 0
+    CLAP_PLUGIN_FEATURE_INSTRUMENT,
+    CLAP_PLUGIN_FEATURE_SYNTHESIZER,
+#else
     CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
+#endif
     kOutputChannels == 2 ? CLAP_PLUGIN_FEATURE_STEREO : CLAP_PLUGIN_FEATURE_SURROUND,
     nullptr
 };
 
 const clap_plugin_descriptor_t descriptor {
     CLAP_VERSION_INIT,
-    "org.s3g.s3g-rnbo-clap.8ch-passthru",
-    "s3g RNBO 8ch Passthru",
+    S3G_RNBO_PLUGIN_ID,
+    S3G_RNBO_PLUGIN_NAME,
     "s3g",
     "https://github.com/s3g/s3g-rnbo-clap",
     "",
     "",
     "0.1.0",
-    "Eight-channel CLAP wrapper test for an RNBO C++ passthrough export.",
+    S3G_RNBO_PLUGIN_DESCRIPTION,
     features
 };
 
@@ -520,6 +782,9 @@ const clap_plugin_t* createPlugin(const clap_plugin_factory*, const clap_host_t*
     auto* p = new (std::nothrow) Plugin();
     if (!p) return nullptr;
     p->host = host;
+#if S3G_HAS_RNBO_EXPORT
+    discoverRnboParams(*p);
+#endif
     p->plugin.desc = &descriptor;
     p->plugin.plugin_data = p;
     p->plugin.init = init;
