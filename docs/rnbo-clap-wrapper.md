@@ -5,9 +5,15 @@ The first wrapper is intentionally small:
 - fixed input/output channel count selected at CMake configure time
 - fallback DSP when no RNBO export is present
 - `RNBO::CoreObject` processing when an export folder is supplied
-- three wrapper parameters: `Gain`, `Mix`, `Output`
+- reflected RNBO parameters plus wrapper utility controls
 - custom Cocoa GUI following the grayscale `s3g-dsp` family direction
 
-Future passes can add RNBO parameter reflection, metadata-based grouping,
-hidden/internal parameters, file dependency loading, MIDI, and multichannel
-layout helpers.
+The wrapper now reflects visible RNBO parameters, forwards host MIDI to RNBO,
+groups large parameter sets into GUI pages, and provides randomization/deviation
+controls for fast stress testing.
+
+Future passes can add hidden/internal parameter metadata, file dependency
+loading, and multichannel layout helpers.
+
+For the 16-channel `mcs.gen~` granular patch adaptation, see
+[mcs.gen~ Granular Adaptation Notes](mcs-gen-granular-adaptation.md).

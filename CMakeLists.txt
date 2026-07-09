@@ -24,6 +24,11 @@ set(S3G_RNBO_PLUGIN_SLUG "" CACHE STRING "Short identifier used for the built CL
 set(S3G_RNBO_PLUGIN_NAME "" CACHE STRING "Human-readable CLAP bundle name; defaults to s3g plus the RNBO export folder name with underscores converted to spaces")
 set(S3G_RNBO_PLUGIN_ID "" CACHE STRING "Stable CLAP plugin id; defaults to org.s3g.s3g-rnbo-clap.<slug>")
 set(S3G_RNBO_PLUGIN_DESCRIPTION "CLAP wrapper for an RNBO C++ export." CACHE STRING "CLAP plugin description")
+set(S3G_RNBO_PLUGIN_KIND "auto" CACHE STRING "CLAP feature kind: auto, effect, or instrument")
+set_property(CACHE S3G_RNBO_PLUGIN_KIND PROPERTY STRINGS auto effect instrument)
+if(NOT S3G_RNBO_PLUGIN_KIND MATCHES "^(auto|effect|instrument)$")
+  message(FATAL_ERROR "S3G_RNBO_PLUGIN_KIND must be auto, effect, or instrument")
+endif()
 
 set(S3G_RNBO_DERIVED_PLUGIN_SLUG "${S3G_RNBO_PLUGIN_SLUG}")
 if(NOT S3G_RNBO_DERIVED_PLUGIN_SLUG)
@@ -120,11 +125,12 @@ if(S3G_BUILD_CLAP)
     S3G_RNBO_PLUGIN_ID="${S3G_RNBO_EFFECTIVE_PLUGIN_ID}"
     S3G_RNBO_PLUGIN_NAME="${S3G_RNBO_DERIVED_PLUGIN_NAME}"
     S3G_RNBO_PLUGIN_DESCRIPTION="${S3G_RNBO_PLUGIN_DESCRIPTION}"
+    S3G_RNBO_PLUGIN_KIND_${S3G_RNBO_PLUGIN_KIND}=1
   )
 
   if(APPLE)
     set_source_files_properties(src/s3g_rnbo_test_clap.cpp PROPERTIES LANGUAGE OBJCXX)
-    target_link_libraries(s3g_rnbo_test_clap PRIVATE "-framework Cocoa")
+    target_link_libraries(s3g_rnbo_test_clap PRIVATE "-framework Cocoa" "-framework AVFoundation")
   endif()
 
   set_target_properties(s3g_rnbo_test_clap PROPERTIES

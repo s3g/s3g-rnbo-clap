@@ -9,6 +9,7 @@
 
 #if defined(__APPLE__)
 #import <Cocoa/Cocoa.h>
+#import <AVFoundation/AVFoundation.h>
 #endif
 
 #if S3G_HAS_RNBO_EXPORT
@@ -24,6 +25,7 @@
 #include <cstring>
 #include <new>
 #include <string>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -43,6 +45,7 @@ constexpr uint32_t kInputChannels = S3G_RNBO_INPUT_CHANNELS;
 constexpr uint32_t kOutputChannels = S3G_RNBO_OUTPUT_CHANNELS;
 constexpr uint32_t kStateVersion = 1;
 constexpr clap_id kRnboParamBase = 1000;
+constexpr float kOutputSoftLimit = 0.98f;
 
 enum ParamId : clap_id {
     kGain = 1,
@@ -61,9 +64,21 @@ struct SavedState {
     Params params {};
 };
 
+float softLimitOutput(float value)
+{
+    if (!std::isfinite(value)) return 0.0f;
+    const float absValue = std::fabs(value);
+    if (absValue <= kOutputSoftLimit) return value;
+    const float headroom = 1.0f - kOutputSoftLimit;
+    const float excess = absValue - kOutputSoftLimit;
+    const float limited = kOutputSoftLimit + headroom * (1.0f - std::exp(-excess / std::max(headroom, 0.0001f)));
+    return std::copysign(std::min(limited, 1.0f), value);
+}
+
 struct StateHeader {
     uint32_t version = kStateVersion;
     uint32_t count = 0;
+    uint32_t sourcePathBytes = 0;
 };
 
 #if S3G_HAS_RNBO_EXPORT
@@ -77,6 +92,11 @@ struct RnboParam {
     double defaultValue = 0.0;
     int steps = 0;
     std::vector<std::string> enumValues;
+};
+
+struct ExternalAudioBuffer {
+    std::unique_ptr<float[]> data;
+    std::atomic<bool> released { false };
 };
 #endif
 
@@ -93,6 +113,7 @@ struct RnboProcessor {
     uint32_t startupRampFrames = 1;
     uint32_t startupRampRemaining = 0;
 #if S3G_HAS_RNBO_EXPORT
+    std::vector<std::shared_ptr<ExternalAudioBuffer>> externalAudioBuffers;
     RNBO::CoreObject rnbo {};
     std::vector<RNBO::SampleValue> inputStorage;
     std::vector<RNBO::SampleValue> outputStorage;
@@ -100,6 +121,8 @@ struct RnboProcessor {
     std::vector<RNBO::SampleValue*> outputPtrs;
     RNBO::MidiEventList midiInput;
     RNBO::MidiEventList midiOutput;
+    std::string sourcePath;
+    std::string sourceStatus = "NO FILE";
 #endif
 
     void prepare(double sr, uint32_t blockSize)
@@ -192,6 +215,57 @@ struct RnboProcessor {
         }
         std::fill(outputStorage.begin(), outputStorage.end(), 0.0);
     }
+
+    bool hasExternalDataRef(const char* id) const
+    {
+        if (!id || !id[0]) return false;
+        const auto count = rnbo.getNumExternalDataRefs();
+        for (RNBO::ExternalDataIndex i = 0; i < count; ++i) {
+            const char* ref = rnbo.getExternalDataId(i);
+            if (ref && std::strcmp(ref, id) == 0) return true;
+        }
+        return false;
+    }
+
+    bool setExternalAudioBuffer(const char* id,
+                                std::unique_ptr<float[]>&& data,
+                                size_t sampleCount,
+                                uint32_t channels,
+                                double sourceSampleRate,
+                                const std::string& path)
+    {
+        if (!id || !id[0] || !data || sampleCount == 0 || channels == 0) return false;
+        if (!hasExternalDataRef(id)) {
+            sourceStatus = "NO RNBO src";
+            return false;
+        }
+        RNBO::Float32AudioBuffer bufferType(static_cast<RNBO::Index>(channels), sourceSampleRate);
+        externalAudioBuffers.erase(
+            std::remove_if(externalAudioBuffers.begin(),
+                           externalAudioBuffers.end(),
+                           [](const std::shared_ptr<ExternalAudioBuffer>& buffer) {
+                               return buffer && buffer->released.load(std::memory_order_acquire);
+                           }),
+            externalAudioBuffers.end());
+        auto holder = std::make_shared<ExternalAudioBuffer>();
+        holder->data = std::move(data);
+        float* raw = holder->data.get();
+        externalAudioBuffers.push_back(holder);
+        rnbo.setExternalData(
+            id,
+            reinterpret_cast<char*>(raw),
+            sampleCount * sizeof(float),
+            bufferType,
+            [holder](RNBO::ExternalDataId, char*) {
+                holder->released.store(true, std::memory_order_release);
+            });
+        sourcePath = path;
+        const size_t slash = path.find_last_of("/\\");
+        const std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+        sourceStatus = name + "  " + std::to_string(channels) + "ch";
+        armStartupGuard();
+        return true;
+    }
 #endif
 
     void processFallback(const clap_audio_buffer_t& input,
@@ -240,7 +314,7 @@ struct RnboProcessor {
 
         for (uint32_t ch = 0; ch < output.channel_count; ++ch) {
             for (uint32_t i = 0; i < n; ++i) {
-                const float value = ch < kOutputChannels ? static_cast<float>(outputPtrs[ch][i]) : 0.0f;
+                const float value = ch < kOutputChannels ? softLimitOutput(static_cast<float>(outputPtrs[ch][i])) : 0.0f;
                 if (output.data32 && output.data32[ch]) output.data32[ch][i] = value;
                 if (output.data64 && output.data64[ch]) output.data64[ch][i] = static_cast<double>(value);
             }
@@ -715,10 +789,14 @@ bool stateSave(const clap_plugin_t* plugin, const clap_ostream_t* stream)
     auto* p = self(plugin);
     StateHeader header {};
     header.count = static_cast<uint32_t>(p->rnboParams.size());
+    header.sourcePathBytes = static_cast<uint32_t>(std::min<size_t>(p->processor.sourcePath.size(), 4096u));
     if (!stream || !stream->write || !writeFull(stream, &header, sizeof(header))) return false;
     for (const auto& param : p->rnboParams) {
         const double value = p->processor.rnbo.getParameterValue(param.index);
         if (!writeFull(stream, &value, sizeof(value))) return false;
+    }
+    if (header.sourcePathBytes > 0) {
+        if (!writeFull(stream, p->processor.sourcePath.data(), header.sourcePathBytes)) return false;
     }
     return true;
 #else
@@ -739,6 +817,12 @@ bool stateLoad(const clap_plugin_t* plugin, const clap_istream_t* stream)
         double value = 0.0;
         if (!readFull(stream, &value, sizeof(value))) return false;
         if (i < n) p->processor.rnbo.setParameterValue(p->rnboParams[i].index, value);
+    }
+    if (header.sourcePathBytes > 0 && header.sourcePathBytes <= 4096u) {
+        std::string path(header.sourcePathBytes, '\0');
+        if (!readFull(stream, path.data(), path.size())) return false;
+        p->processor.sourcePath = path;
+        p->processor.sourceStatus = "RELOAD " + path.substr(path.find_last_of("/\\") == std::string::npos ? 0 : path.find_last_of("/\\") + 1);
     }
 #if defined(__APPLE__)
     if (p->guiView) [static_cast<NSView*>(p->guiView) setNeedsDisplay:YES];
@@ -765,6 +849,69 @@ NSColor* uiColor(int rgb, double alpha = 1.0)
                                       blue:(rgb & 0xff) / 255.0
                                      alpha:alpha];
 }
+
+NSString* compactParamValueText(double value)
+{
+    if (!std::isfinite(value)) return @"0.000";
+    const double magnitude = std::fabs(value);
+    if (magnitude >= 100.0) return [NSString stringWithFormat:@"%.1f", value];
+    if (magnitude >= 10.0) return [NSString stringWithFormat:@"%.2f", value];
+    return [NSString stringWithFormat:@"%.3f", value];
+}
+
+#if S3G_HAS_RNBO_EXPORT
+bool loadRnboSourceFromPath(Plugin& p, const std::string& path)
+{
+    if (path.empty()) return false;
+    @autoreleasepool {
+        NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
+        NSURL* url = [NSURL fileURLWithPath:nsPath];
+        NSError* error = nil;
+        AVAudioFile* file = [[AVAudioFile alloc] initForReading:url error:&error];
+        if (!file) {
+            p.processor.sourceStatus = "OPEN FAILED";
+            return false;
+        }
+        AVAudioFormat* format = [file processingFormat];
+        const AVAudioFrameCount frames = static_cast<AVAudioFrameCount>(std::min<int64_t>([file length], 0x7fffffff));
+        AVAudioPCMBuffer* buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:frames];
+        if (!buffer) {
+            [file release];
+            p.processor.sourceStatus = "BUFFER FAILED";
+            return false;
+        }
+        BOOL ok = [file readIntoBuffer:buffer error:&error];
+        if (!ok || buffer.frameLength < 2 || !buffer.floatChannelData) {
+            [buffer release];
+            [file release];
+            p.processor.sourceStatus = "READ FAILED";
+            return false;
+        }
+        const uint32_t channels = std::max<uint32_t>(1u, buffer.format.channelCount);
+        const uint32_t frameCount = buffer.frameLength;
+        const size_t sampleCount = static_cast<size_t>(frameCount) * channels;
+        auto interleaved = std::make_unique<float[]>(sampleCount);
+        for (uint32_t frame = 0; frame < frameCount; ++frame) {
+            for (uint32_t ch = 0; ch < channels; ++ch) {
+                const float* src = buffer.floatChannelData[ch];
+                interleaved[static_cast<size_t>(frame) * channels + ch] = src ? src[frame] : 0.0f;
+            }
+        }
+        const bool okSet = p.processor.setExternalAudioBuffer("src",
+                                                              std::move(interleaved),
+                                                              sampleCount,
+                                                              channels,
+                                                              buffer.format.sampleRate,
+                                                              path);
+        if (okSet && channels != 16u) {
+            p.processor.sourceStatus += " WARN !=16ch";
+        }
+        [buffer release];
+        [file release];
+        return okSet;
+    }
+}
+#endif
 
 constexpr uint32_t kGuiWidth = 980;
 constexpr uint32_t kGuiFallbackHeight = 320;
@@ -897,8 +1044,10 @@ uint32_t preferredGuiHeight(const Plugin* p)
     void* _plugin;
     int _drag;
     int _openEnum;
+    int _hoverEnumItem;
     size_t _page;
     NSTimer* _timer;
+    NSTrackingArea* _trackingArea;
 }
 - (id)initWithPlugin:(void*)plugin;
 - (void)stopTimer;
@@ -911,7 +1060,9 @@ uint32_t preferredGuiHeight(const Plugin* p)
         _plugin = plugin;
         _drag = -1;
         _openEnum = -1;
+        _hoverEnumItem = -1;
         _page = 0;
+        _trackingArea = nil;
         _timer = [[NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0) target:self selector:@selector(tick:) userInfo:nil repeats:YES] retain];
     }
     return self;
@@ -919,6 +1070,11 @@ uint32_t preferredGuiHeight(const Plugin* p)
 - (void)dealloc
 {
     [self stopTimer];
+    if (_trackingArea) {
+        [self removeTrackingArea:_trackingArea];
+        [_trackingArea release];
+        _trackingArea = nil;
+    }
     [super dealloc];
 }
 - (void)stopTimer
@@ -933,6 +1089,20 @@ uint32_t preferredGuiHeight(const Plugin* p)
 {
     (void)timer;
     [self setNeedsDisplay:YES];
+}
+- (void)updateTrackingAreas
+{
+    [super updateTrackingAreas];
+    if (_trackingArea) {
+        [self removeTrackingArea:_trackingArea];
+        [_trackingArea release];
+        _trackingArea = nil;
+    }
+    _trackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds
+                                                 options:NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+                                                   owner:self
+                                                userInfo:nil];
+    [self addTrackingArea:_trackingArea];
 }
 - (BOOL)isFlipped { return YES; }
 - (void)drawSlider:(NSString*)name value:(double)value y:(CGFloat)y attrs:(NSDictionary*)attrs dim:(NSDictionary*)dim
@@ -951,21 +1121,22 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSRectFill(NSMakeRect(track.origin.x + track.size.width * value - 1.5, track.origin.y - 2, 3, 14));
     [[NSString stringWithFormat:@"%.3f", value] drawAtPoint:NSMakePoint(410, y - 2) withAttributes:attrs];
 }
-- (void)drawCompactSlider:(NSString*)name value:(double)value frame:(NSRect)frame attrs:(NSDictionary*)attrs dim:(NSDictionary*)dim
+- (void)drawCompactSlider:(NSString*)name normalized:(double)normalized value:(double)value frame:(NSRect)frame attrs:(NSDictionary*)attrs dim:(NSDictionary*)dim
 {
     [name drawAtPoint:NSMakePoint(frame.origin.x, frame.origin.y) withAttributes:dim];
-    NSRect track = NSMakeRect(frame.origin.x, frame.origin.y + 18, frame.size.width - 54, 8);
+    NSRect track = NSMakeRect(frame.origin.x, frame.origin.y + 18, frame.size.width - 66, 8);
+    const double clamped = std::clamp(normalized, 0.0, 1.0);
     [uiColor(0x111111) setFill];
     NSRectFill(track);
     [uiColor(0x626262) setStroke];
     NSFrameRect(track);
     NSRect fill = NSInsetRect(track, 1, 1);
-    fill.size.width *= static_cast<CGFloat>(std::clamp(value, 0.0, 1.0));
+    fill.size.width *= static_cast<CGFloat>(clamped);
     [uiColor(0xa8a8a8) setFill];
     NSRectFill(fill);
     [uiColor(0xe8e8e8) setFill];
-    NSRectFill(NSMakeRect(track.origin.x + track.size.width * value - 1.5, track.origin.y - 2, 3, 12));
-    [[NSString stringWithFormat:@"%.3f", value] drawAtPoint:NSMakePoint(frame.origin.x + frame.size.width - 45, frame.origin.y + 13) withAttributes:attrs];
+    NSRectFill(NSMakeRect(track.origin.x + track.size.width * clamped - 1.5, track.origin.y - 2, 3, 12));
+    [compactParamValueText(value) drawAtPoint:NSMakePoint(frame.origin.x + frame.size.width - 58, frame.origin.y + 13) withAttributes:attrs];
 }
 #if S3G_HAS_RNBO_EXPORT
 - (void)drawCompactEnum:(NSString*)name param:(const RnboParam&)param value:(double)value frame:(NSRect)frame attrs:(NSDictionary*)attrs dim:(NSDictionary*)dim
@@ -986,7 +1157,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
 }
 - (double)valueForPoint:(NSPoint)pt frame:(NSRect)frame
 {
-    NSRect track = NSMakeRect(frame.origin.x, frame.origin.y + 18, frame.size.width - 54, 8);
+    NSRect track = NSMakeRect(frame.origin.x, frame.origin.y + 18, frame.size.width - 66, 8);
     return std::clamp((pt.x - track.origin.x) / track.size.width, 0.0, 1.0);
 }
 - (double)enumValueForPoint:(NSPoint)pt frame:(NSRect)frame param:(const RnboParam&)param
@@ -1016,15 +1187,19 @@ uint32_t preferredGuiHeight(const Plugin* p)
 }
 - (NSRect)randomButtonRect
 {
-    return NSMakeRect(kGuiWidth - 318, 13, 62, 22);
+    return NSMakeRect(kGuiWidth - 250, 13, 62, 22);
+}
+- (NSRect)loadButtonRect
+{
+    return NSMakeRect(kGuiWidth - 320, 13, 62, 22);
 }
 - (NSRect)randomAmountRect
 {
-    return NSMakeRect(kGuiWidth - 246, 13, 118, 22);
+    return NSMakeRect(kGuiWidth - 180, 13, 82, 22);
 }
 - (NSRect)midiActivityRect
 {
-    return NSMakeRect(kGuiWidth - 120, 13, 26, 22);
+    return NSMakeRect(kGuiWidth - 90, 13, 26, 22);
 }
 - (CGFloat)currentParamStartY
 {
@@ -1057,7 +1232,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
     auto* p = static_cast<Plugin*>(_plugin);
     NSRect frame = [self randomAmountRect];
     [@"DEV" drawAtPoint:NSMakePoint(frame.origin.x, frame.origin.y + 5) withAttributes:dim];
-    NSRect track = NSMakeRect(frame.origin.x + 30, frame.origin.y + 8, frame.size.width - 62, 8);
+    NSRect track = NSMakeRect(frame.origin.x + 30, frame.origin.y + 8, frame.size.width - 58, 8);
     const double value = std::clamp(static_cast<double>(p->randomAmount.load(std::memory_order_relaxed)), 0.0, 1.0);
     [uiColor(0x111111) setFill];
     NSRectFill(track);
@@ -1069,7 +1244,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSRectFill(fill);
     [uiColor(0xe8e8e8) setFill];
     NSRectFill(NSMakeRect(track.origin.x + track.size.width * value - 1.5, track.origin.y - 2, 3, 12));
-    [[NSString stringWithFormat:@"%.2f", value] drawAtPoint:NSMakePoint(frame.origin.x + frame.size.width - 28, frame.origin.y + 5) withAttributes:attrs];
+    [[NSString stringWithFormat:@"%.2f", value] drawAtPoint:NSMakePoint(frame.origin.x + frame.size.width - 26, frame.origin.y + 5) withAttributes:attrs];
 }
 - (void)drawMidiActivityWithAttrs:(NSDictionary*)attrs dim:(NSDictionary*)dim
 {
@@ -1096,10 +1271,28 @@ uint32_t preferredGuiHeight(const Plugin* p)
 {
     auto* p = static_cast<Plugin*>(_plugin);
     NSRect frame = [self randomAmountRect];
-    NSRect track = NSMakeRect(frame.origin.x + 30, frame.origin.y + 8, frame.size.width - 62, 8);
+    NSRect track = NSMakeRect(frame.origin.x + 30, frame.origin.y + 8, frame.size.width - 58, 8);
     const double value = std::clamp((pt.x - track.origin.x) / track.size.width, 0.0, 1.0);
     p->randomAmount.store(static_cast<float>(value), std::memory_order_relaxed);
     [self setNeedsDisplay:YES];
+}
+- (void)loadSourceFile
+{
+#if S3G_HAS_RNBO_EXPORT
+    auto* p = static_cast<Plugin*>(_plugin);
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    [panel setAllowsMultipleSelection:NO];
+    [panel setCanChooseDirectories:NO];
+    [panel setCanChooseFiles:YES];
+    if ([panel runModal] == NSModalResponseOK) {
+        NSURL* url = [[panel URLs] firstObject];
+        NSString* path = [url path];
+        if (path) {
+            loadRnboSourceFromPath(*p, std::string([path UTF8String]));
+            [self setNeedsDisplay:YES];
+        }
+    }
+#endif
 }
 - (void)drawOpenEnumMenuWithAttrs:(NSDictionary*)attrs dim:(NSDictionary*)dim
 {
@@ -1126,12 +1319,14 @@ uint32_t preferredGuiHeight(const Plugin* p)
     const int selected = std::clamp(static_cast<int>(std::lround(value - param.min)), 0, static_cast<int>(param.enumValues.size()) - 1);
     for (size_t i = 0; i < param.enumValues.size(); ++i) {
         NSRect item = NSMakeRect(menu.origin.x, menu.origin.y + static_cast<CGFloat>(i) * kGuiEnumRowH, menu.size.width, kGuiEnumRowH);
-        if (static_cast<int>(i) == selected) {
-            [uiColor(0x3a3a3a) setFill];
+        const bool hovered = static_cast<int>(i) == _hoverEnumItem;
+        const bool active = static_cast<int>(i) == selected;
+        if (hovered || active) {
+            [uiColor(hovered ? 0x505050 : 0x3a3a3a) setFill];
             NSRectFill(NSInsetRect(item, 1, 1));
         }
         NSString* label = [NSString stringWithUTF8String:param.enumValues[i].c_str()];
-        [label drawAtPoint:NSMakePoint(item.origin.x + 6, item.origin.y + 4) withAttributes:static_cast<int>(i) == selected ? attrs : dim];
+        [label drawAtPoint:NSMakePoint(item.origin.x + 6, item.origin.y + 4) withAttributes:(hovered || active) ? attrs : dim];
     }
 #else
     (void)attrs;
@@ -1147,6 +1342,9 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSDictionary* text = @{ NSFontAttributeName:[NSFont fontWithName:@"Menlo" size:10] ?: [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular], NSForegroundColorAttributeName:uiColor(0xf0f0f0) };
     NSDictionary* dim = @{ NSFontAttributeName:[NSFont fontWithName:@"Menlo" size:10] ?: [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular], NSForegroundColorAttributeName:uiColor(0x9e9e9e) };
     [[NSString stringWithUTF8String:S3G_RNBO_PLUGIN_NAME] drawAtPoint:NSMakePoint(18, 16) withAttributes:text];
+#if S3G_HAS_RNBO_EXPORT
+    [self drawButton:@"LOAD" frame:[self loadButtonRect] attrs:text];
+#endif
     [self drawButton:@"RAND" frame:[self randomButtonRect] attrs:text];
     [self drawRandomAmountWithAttrs:text dim:dim];
     [self drawMidiActivityWithAttrs:text dim:dim];
@@ -1196,7 +1394,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
         const std::string displayName = displayNameForParam(param);
         NSString* name = [NSString stringWithUTF8String:displayName.c_str()];
         if (isEnumParam(param)) [self drawCompactEnum:name param:param value:raw frame:frame attrs:text dim:dim];
-        else [self drawCompactSlider:name value:normalized frame:frame attrs:text dim:dim];
+        else [self drawCompactSlider:name normalized:normalized value:raw frame:frame attrs:text dim:dim];
     }
 #else
     [self drawSlider:@"GAIN" value:p->params.gain y:94 attrs:text dim:dim];
@@ -1213,6 +1411,8 @@ uint32_t preferredGuiHeight(const Plugin* p)
     [mode drawAtPoint:NSMakePoint(kGuiStartX, metaY) withAttributes:dim];
     [[NSString stringWithFormat:@"IO %u IN / %u OUT", kInputChannels, kOutputChannels] drawAtPoint:NSMakePoint(kGuiWidth - 210, metaY) withAttributes:dim];
     [[NSString stringWithFormat:@"PARAMS %zu  PAGE %zu/%zu  GROUP %s", p->rnboParams.size(), _page + 1, totalPages, pages[_page].label.c_str()] drawAtPoint:NSMakePoint(kGuiStartX, metaY + 18) withAttributes:dim];
+    NSString* source = [NSString stringWithUTF8String:p->processor.sourceStatus.c_str()];
+    [[NSString stringWithFormat:@"SRC %@", source] drawAtPoint:NSMakePoint(kGuiStartX, metaY + 36) withAttributes:dim];
     [self drawOpenEnumMenuWithAttrs:text dim:dim];
 #else
     [mode drawAtPoint:NSMakePoint(42, 214) withAttributes:dim];
@@ -1253,9 +1453,19 @@ uint32_t preferredGuiHeight(const Plugin* p)
 {
     NSPoint pt = [self convertPoint:event.locationInWindow fromView:nil];
     auto* p = static_cast<Plugin*>(_plugin);
+#if S3G_HAS_RNBO_EXPORT
+    if (NSPointInRect(pt, [self loadButtonRect])) {
+        _drag = -1;
+        _openEnum = -1;
+        _hoverEnumItem = -1;
+        [self loadSourceFile];
+        return;
+    }
+#endif
     if (NSPointInRect(pt, [self randomButtonRect])) {
         _drag = -1;
         _openEnum = -1;
+        _hoverEnumItem = -1;
         randomizeParams(*p);
         [self setNeedsDisplay:YES];
         return;
@@ -1263,6 +1473,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
     if (NSPointInRect(pt, [self randomAmountRect])) {
         _drag = -2;
         _openEnum = -1;
+        _hoverEnumItem = -1;
         [self setRandomAmountFromPoint:pt];
         return;
     }
@@ -1283,11 +1494,13 @@ uint32_t preferredGuiHeight(const Plugin* p)
                 const int item = std::clamp(static_cast<int>((pt.y - menu.origin.y) / kGuiEnumRowH), 0, static_cast<int>(param.enumValues.size()) - 1);
                 setParam(*p, param.id, param.min + static_cast<double>(item));
                 _openEnum = -1;
+                _hoverEnumItem = -1;
                 [self setNeedsDisplay:YES];
                 return;
             }
         }
         _openEnum = -1;
+        _hoverEnumItem = -1;
         [self setNeedsDisplay:YES];
         return;
     }
@@ -1296,6 +1509,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
             _page = page;
             _drag = -1;
             _openEnum = -1;
+            _hoverEnumItem = -1;
             [self setNeedsDisplay:YES];
             return;
         }
@@ -1311,11 +1525,13 @@ uint32_t preferredGuiHeight(const Plugin* p)
             if (isEnumParam(param) && NSPointInRect(pt, [self enumBoxForFrame:frame])) {
                 _drag = -1;
                 _openEnum = static_cast<int>(pageIndices[localIndex]);
+                _hoverEnumItem = -1;
                 [self setNeedsDisplay:YES];
                 return;
             }
             _drag = static_cast<int>(pageIndices[localIndex]);
             _openEnum = -1;
+            _hoverEnumItem = -1;
             [self setParamFromPoint:pt];
             return;
         }
@@ -1329,6 +1545,37 @@ uint32_t preferredGuiHeight(const Plugin* p)
             return;
         }
     }
+#endif
+}
+- (void)mouseMoved:(NSEvent*)event
+{
+#if S3G_HAS_RNBO_EXPORT
+    if (_openEnum < 0) return;
+    NSPoint pt = [self convertPoint:event.locationInWindow fromView:nil];
+    auto* p = static_cast<Plugin*>(_plugin);
+    const auto pages = buildGuiParamPages(p);
+    int hover = -1;
+    if (_page < pages.size() && static_cast<size_t>(_openEnum) < p->rnboParams.size()) {
+        const auto& pageIndices = pages[_page].indices;
+        const auto found = std::find(pageIndices.begin(), pageIndices.end(), static_cast<size_t>(_openEnum));
+        if (found != pageIndices.end()) {
+            const size_t localIndex = static_cast<size_t>(std::distance(pageIndices.begin(), found));
+            const size_t col = localIndex % kGuiParamColumns;
+            const size_t row = localIndex / kGuiParamColumns;
+            NSRect frame = NSMakeRect(kGuiStartX + col * kGuiColStep, [self currentParamStartY] + row * kGuiParamRowH, kGuiColW, 34);
+            const auto& param = p->rnboParams[static_cast<size_t>(_openEnum)];
+            NSRect menu = [self enumMenuRectForParam:param frame:frame];
+            if (NSPointInRect(pt, menu)) {
+                hover = std::clamp(static_cast<int>((pt.y - menu.origin.y) / kGuiEnumRowH), 0, static_cast<int>(param.enumValues.size()) - 1);
+            }
+        }
+    }
+    if (hover != _hoverEnumItem) {
+        _hoverEnumItem = hover;
+        [self setNeedsDisplay:YES];
+    }
+#else
+    (void)event;
 #endif
 }
 - (void)mouseDragged:(NSEvent*)event
@@ -1375,7 +1622,7 @@ const void* getExtension(const clap_plugin_t*, const char* id)
 }
 
 const char* const features[] {
-#if S3G_RNBO_INPUT_CHANNELS == 0
+#if defined(S3G_RNBO_PLUGIN_KIND_instrument) || (defined(S3G_RNBO_PLUGIN_KIND_auto) && S3G_RNBO_INPUT_CHANNELS == 0)
     CLAP_PLUGIN_FEATURE_INSTRUMENT,
     CLAP_PLUGIN_FEATURE_SYNTHESIZER,
 #else

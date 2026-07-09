@@ -56,6 +56,12 @@ cmake -S . -B build-clap \
 cmake --build build-clap
 ```
 
+`S3G_RNBO_PLUGIN_KIND` controls CLAP categorization: `auto` keeps the
+default behavior, `effect` advertises an audio effect, and `instrument`
+advertises an instrument/synthesizer. Use `instrument` for file-driven or
+MIDI-driven RNBO patches that should appear in REAPER as sound sources,
+including 0-input multichannel generators.
+
 By default, the CLAP bundle and plugin name come from the RNBO export folder.
 For example, `rnbo_exports/8ch_passthru` builds `s3g_8ch_passthru.clap` and
 appears in the host as `s3g 8ch passthru`.
@@ -71,6 +77,11 @@ Install locally for REAPER:
 Local Max/RNBO patch work can live in `max_patches/`, and generated RNBO C++
 exports can live in `rnbo_exports/`. Both are ignored by git by default so the
 wrapper source history stays separate from local RNBO-generated code.
+
+For Max `mcs.gen~` or file-buffer patches, see
+[mcs.gen~ Granular Adaptation Notes](docs/mcs-gen-granular-adaptation.md). The
+wrapper can load a host-selected audio file into an RNBO external data reference
+named `src`, which is the path used by the current 16-channel granular tests.
 
 For `gen~` code inside RNBO, expose internal Gen `Param` values with:
 
@@ -108,13 +119,23 @@ high values create a wider spread for stress tests and exploratory patches.
 
 For RNBO instruments or MIDI-controlled effects, the wrapper advertises a CLAP
 note input port and forwards incoming CLAP MIDI/note events to RNBO MIDI port
-0. Instrument builds also show a small MIDI activity indicator in the GUI top
-bar.
+0 while preserving MIDI channel numbers for RNBO/Max `notein` and `ctlin`
+objects. For example, MIDI channel 5 from the host reaches `notein 5` inside
+RNBO. Instrument builds also show a small MIDI activity indicator in the GUI
+top bar.
+
+The `LOAD` button opens a macOS file picker and loads the selected audio file
+into an RNBO external data reference named `src`. The GUI reports the loaded
+filename and channel count. CLAP state stores the selected source path for
+recall; if a session is restored, reload the file if the RNBO patch needs the
+buffer contents before playback.
 
 The wrapper applies a startup/reset guard to reduce audible spikes from RNBO
 patch initialization, delay lines, or reverb state when a plugin is first
 inserted or reset by the host. It silently pre-rolls the RNBO processor, then
-briefly mutes and fades in the host output.
+briefly mutes and fades in the host output. RNBO output samples also pass
+through a small wrapper-side soft limiter to catch accidental overloads during
+patch development.
 
 ## Installing Built Plugins
 
