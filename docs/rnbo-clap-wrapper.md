@@ -14,6 +14,3 @@ controls for fast stress testing.
 
 Future passes can add hidden/internal parameter metadata, file dependency
 loading, and multichannel layout helpers.
-
-For the 16-channel `mcs.gen~` granular patch adaptation, see
-[mcs.gen~ Granular Adaptation Notes](mcs-gen-granular-adaptation.md).

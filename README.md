@@ -76,12 +76,9 @@ Install locally for REAPER:
 
 Local Max/RNBO patch work can live in `max_patches/`, and generated RNBO C++
 exports can live in `rnbo_exports/`. Both are ignored by git by default so the
-wrapper source history stays separate from local RNBO-generated code.
-
-For Max `mcs.gen~` or file-buffer patches, see
-[mcs.gen~ Granular Adaptation Notes](docs/mcs-gen-granular-adaptation.md). The
-wrapper can load a host-selected audio file into an RNBO external data reference
-named `src`, which is the path used by the current 16-channel granular tests.
+wrapper source history stays separate from local RNBO-generated code. Notes
+about specific Max, RNBO, or Gen patch builds belong in the ignored
+`max_patches/` workspace, not in public-facing docs.
 
 For `gen~` code inside RNBO, expose internal Gen `Param` values with:
 

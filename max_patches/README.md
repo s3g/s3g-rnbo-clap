@@ -9,6 +9,7 @@ Use it for:
 - `rnboscript` experiments
 - audio/media fixtures needed while designing a patch
 - notes and patch-local helper files that are not ready for the repo
+- private notes about specific Max, RNBO, or Gen patch builds
 
 Everything in this folder is ignored by git except this README.
 
