@@ -66,6 +66,56 @@ Install locally for REAPER:
 ./scripts/install-clap-bundles.sh
 ```
 
+## RNBO Patch Authoring Notes
+
+Local Max/RNBO patch work can live in `max_patches/`, and generated RNBO C++
+exports can live in `rnbo_exports/`. Both are ignored by git by default so the
+wrapper source history stays separate from local RNBO-generated code.
+
+For `gen~` code inside RNBO, expose internal Gen `Param` values with:
+
+```text
+gen~ @exposeparams 1
+```
+
+Set a stable Max scripting name / `varname` on that `gen~` object when you want
+predictable exported parameter paths. For example, a `gen~` object with
+`varname` set to `shared_reverb` exposes Gen params as names like:
+
+```text
+shared_reverb/rv_send
+shared_reverb/rv_wet
+shared_reverb/output
+```
+
+In Max this `varname` may appear in the inspector as the object's scripting
+name rather than in the visible object text. The wrapper uses those exported
+RNBO parameter names to group related controls in the CLAP GUI.
+
+## Wrapper GUI and Host Behavior
+
+When an RNBO export is present, the CLAP wrapper discovers visible RNBO params
+and draws controls for them in the plugin GUI. Channel-style names such as
+`ch01_gain` are grouped by suffix, and slash paths such as
+`shared_reverb/rv_send` are grouped by the prefix before the slash.
+
+Stepped enum parameters are shown as popup-style selectors. Large parameter
+sets are split into pages, and the page buttons wrap into multiple rows when
+needed. The `RAND` button randomizes exposed RNBO parameters from the wrapper
+side, and the adjacent `DEV` control sets how far the current parameter values
+move toward the random targets. Low `DEV` values create smaller deviations;
+high values create a wider spread for stress tests and exploratory patches.
+
+For RNBO instruments or MIDI-controlled effects, the wrapper advertises a CLAP
+note input port and forwards incoming CLAP MIDI/note events to RNBO MIDI port
+0. Instrument builds also show a small MIDI activity indicator in the GUI top
+bar.
+
+The wrapper applies a startup/reset guard to reduce audible spikes from RNBO
+patch initialization, delay lines, or reverb state when a plugin is first
+inserted or reset by the host. It silently pre-rolls the RNBO processor, then
+briefly mutes and fades in the host output.
+
 ## Installing Built Plugins
 
 Built CLAP plugins should be installed in the user CLAP plugin folder:
