@@ -10,6 +10,15 @@ minimal grayscale GUI language.
 The current target is macOS + REAPER. Other hosts or operating systems may work
 later, but they are not the supported release target for these wrappers.
 
+## Related Projects
+
+[`s3g-mc`](https://github.com/s3g/s3g-mc) is the main REAPER multichannel
+package that defines many of the workflows these plugin builds support.
+
+[`s3g-dsp`](https://github.com/s3g/s3g-dsp) is the sibling native C++ CLAP
+plugin project. `s3g-rnbo-clap` stays separate so RNBO/Max-generated plugin
+builds can be tested without changing the BSD-3 native DSP repo.
+
 ## License Boundary
 
 Original `s3g` wrapper code in this repository is BSD-3-Clause.
