@@ -1,11 +1,14 @@
 # s3g-rnbo-clap
 
-`s3g-rnbo-clap` is a small CLAP wrapper lab for testing RNBO C++ source exports
-inside the `s3g` plugin style.
+`s3g-rnbo-clap` is a small CLAP wrapper for turning RNBO C++ source exports
+into macOS CLAP plugins inside the `s3g` plugin style.
 
 The goal is to keep RNBO-generated DSP experiments separate from the BSD-3
 native C++ `s3g-dsp` repo while preserving the same macOS + REAPER workflow and
 minimal grayscale GUI language.
+
+The current target is macOS + REAPER. Other hosts or operating systems may work
+later, but they are not the supported release target for these wrappers.
 
 ## License Boundary
 
@@ -18,10 +21,10 @@ Export Licensing FAQ.
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-## First Test
+## Building an RNBO Export
 
-The repo builds without an RNBO export by using a fallback gain/mix processor.
-The first real export test is an eight-channel passthrough at:
+The repo builds without a RNBO export by using a fallback gain/mix processor.
+The first RNBO export used with this wrapper is an eight-channel passthrough at:
 
 ```text
 rnbo_exports/8ch_passthru/
@@ -53,11 +56,32 @@ cmake -S . -B build-clap \
 cmake --build build-clap
 ```
 
-Install locally for REAPER testing:
+Install locally for REAPER:
 
 ```sh
 ./scripts/install-clap-bundles.sh
 ```
+
+## Installing Built Plugins
+
+Built CLAP plugins should be installed in the user CLAP plugin folder:
+
+```text
+~/Library/Audio/Plug-Ins/CLAP/
+```
+
+After copying or installing a `.clap` bundle, open REAPER and rescan CLAP
+plugins if the new plugin does not appear automatically. Search for `s3g` in
+REAPER's FX browser.
+
+For multichannel RNBO exports, set the REAPER track channel count before
+inserting the plugin. For example, an eight-channel RNBO export should be used
+on an eight-channel track so the plugin pin connector and following meters show
+the expected channels.
+
+If a pre-release download includes a ready-to-use `.clap` bundle, install that
+bundle directly. The RNBO-generated C++ source is not needed for normal audio
+use.
 
 Stage a pre-release folder without making a zip:
 
@@ -84,5 +108,5 @@ cmake -S . -B build-clap \
   -DS3G_RNBO_OUTPUT_CHANNELS=8
 ```
 
-For the first RNBO test, use a simple patch with no external file dependencies,
+For a first RNBO export, use a simple patch with no external file dependencies,
 one obvious audible effect, and a small set of parameters.
