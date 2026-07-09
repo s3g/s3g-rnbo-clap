@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -535,19 +536,100 @@ NSColor* uiColor(int rgb, double alpha = 1.0)
                                      alpha:alpha];
 }
 
-constexpr uint32_t kGuiWidth = 620;
+constexpr uint32_t kGuiWidth = 980;
 constexpr uint32_t kGuiFallbackHeight = 320;
-constexpr uint32_t kGuiPagedHeight = 680;
+constexpr uint32_t kGuiPagedHeight = 520;
 constexpr size_t kGuiParamsPerPage = 24;
-constexpr size_t kGuiParamColumns = 2;
-constexpr CGFloat kGuiParamStartY = 118;
-constexpr CGFloat kGuiParamRowH = 44;
+constexpr size_t kGuiParamColumns = 4;
+constexpr CGFloat kGuiParamStartY = 124;
+constexpr CGFloat kGuiParamRowH = 42;
+constexpr CGFloat kGuiPanelX = 24;
+constexpr CGFloat kGuiPanelW = 932;
+constexpr CGFloat kGuiStartX = 42;
+constexpr CGFloat kGuiColW = 214;
+constexpr CGFloat kGuiColStep = 226;
+constexpr CGFloat kGuiTabW = 92;
+constexpr CGFloat kGuiTabH = 22;
+
+#if S3G_HAS_RNBO_EXPORT
+struct GuiParamPage {
+    std::string label;
+    std::vector<size_t> indices;
+};
+
+bool splitChannelParamName(const std::string& name, std::string& channel, std::string& group)
+{
+    if (name.size() < 6) return false;
+    if (name[0] != 'c' || name[1] != 'h') return false;
+    if (!std::isdigit(static_cast<unsigned char>(name[2])) ||
+        !std::isdigit(static_cast<unsigned char>(name[3])) ||
+        name[4] != '_') return false;
+    channel = name.substr(0, 4);
+    group = name.substr(5);
+    return !group.empty();
+}
+
+std::string groupNameForParam(const RnboParam& param)
+{
+    std::string channel;
+    std::string group;
+    if (splitChannelParamName(param.name, channel, group)) return group;
+    return param.name.empty() ? "params" : param.name;
+}
+
+std::string displayNameForParam(const RnboParam& param)
+{
+    std::string channel;
+    std::string group;
+    if (splitChannelParamName(param.name, channel, group)) return channel;
+    return param.name;
+}
+
+int channelNumberForParam(const RnboParam& param)
+{
+    std::string channel;
+    std::string group;
+    if (!splitChannelParamName(param.name, channel, group)) return -1;
+    return std::stoi(channel.substr(2));
+}
+
+std::vector<GuiParamPage> buildGuiParamPages(const Plugin* p)
+{
+    std::vector<GuiParamPage> pages;
+    if (!p) return pages;
+    for (size_t i = 0; i < p->rnboParams.size(); ++i) {
+        const std::string group = groupNameForParam(p->rnboParams[i]);
+        auto found = std::find_if(pages.begin(), pages.end(), [&](const GuiParamPage& page) {
+            return page.label == group;
+        });
+        if (found == pages.end()) {
+            pages.push_back(GuiParamPage { group, {} });
+            found = pages.end() - 1;
+        }
+        found->indices.push_back(i);
+    }
+    for (auto& page : pages) {
+        std::stable_sort(page.indices.begin(), page.indices.end(), [&](size_t a, size_t b) {
+            const int channelA = channelNumberForParam(p->rnboParams[a]);
+            const int channelB = channelNumberForParam(p->rnboParams[b]);
+            if (channelA >= 0 && channelB >= 0 && channelA != channelB) return channelA < channelB;
+            return p->rnboParams[a].name < p->rnboParams[b].name;
+        });
+    }
+    if (pages.empty()) pages.push_back(GuiParamPage { "params", {} });
+    return pages;
+}
+#endif
 
 uint32_t preferredGuiHeight(const Plugin* p)
 {
 #if S3G_HAS_RNBO_EXPORT
-    if (p && p->rnboParams.size() > kGuiParamsPerPage) return kGuiPagedHeight;
-    const size_t rows = p ? (p->rnboParams.size() + 1) / 2 : 0;
+    const auto pages = buildGuiParamPages(p);
+    const size_t maxItems = pages.empty() ? 0 : std::max_element(pages.begin(), pages.end(), [](const GuiParamPage& a, const GuiParamPage& b) {
+        return a.indices.size() < b.indices.size();
+    })->indices.size();
+    if (pages.size() > 1 || maxItems > kGuiParamsPerPage) return kGuiPagedHeight;
+    const size_t rows = (maxItems + kGuiParamColumns - 1) / kGuiParamColumns;
     const auto height = static_cast<uint32_t>(kGuiParamStartY + rows * kGuiParamRowH + 104);
     return std::max(kGuiFallbackHeight, height);
 #else
@@ -617,14 +699,14 @@ uint32_t preferredGuiHeight(const Plugin* p)
 {
 #if S3G_HAS_RNBO_EXPORT
     auto* p = static_cast<Plugin*>(_plugin);
-    return std::max<size_t>(1, (p->rnboParams.size() + kGuiParamsPerPage - 1) / kGuiParamsPerPage);
+    return buildGuiParamPages(p).size();
 #else
     return 1;
 #endif
 }
 - (NSRect)tabRect:(size_t)page
 {
-    return NSMakeRect(42 + page * 84, 78, 72, 22);
+    return NSMakeRect(kGuiStartX + page * (kGuiTabW + 6), 78, kGuiTabW, kGuiTabH);
 }
 - (void)drawRect:(NSRect)dirtyRect
 {
@@ -635,27 +717,27 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSDictionary* text = @{ NSFontAttributeName:[NSFont fontWithName:@"Menlo" size:10] ?: [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular], NSForegroundColorAttributeName:uiColor(0xf0f0f0) };
     NSDictionary* dim = @{ NSFontAttributeName:[NSFont fontWithName:@"Menlo" size:10] ?: [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular], NSForegroundColorAttributeName:uiColor(0x9e9e9e) };
     [[NSString stringWithUTF8String:S3G_RNBO_PLUGIN_NAME] drawAtPoint:NSMakePoint(18, 16) withAttributes:text];
-    [[NSString stringWithFormat:@"PK %.3f", p->peak.load(std::memory_order_relaxed)] drawAtPoint:NSMakePoint(520, 16) withAttributes:dim];
+    [[NSString stringWithFormat:@"PK %.3f", p->peak.load(std::memory_order_relaxed)] drawAtPoint:NSMakePoint(kGuiWidth - 98, 16) withAttributes:dim];
 #if S3G_HAS_RNBO_EXPORT
-    const size_t totalPages = [self pageCount];
+    const auto pages = buildGuiParamPages(p);
+    const size_t totalPages = pages.size();
     if (_page >= totalPages) _page = totalPages - 1;
-    const size_t pageStart = _page * kGuiParamsPerPage;
-    const size_t pageEnd = std::min(pageStart + kGuiParamsPerPage, p->rnboParams.size());
-    const size_t pageItems = pageEnd - pageStart;
+    const auto& pageIndices = pages[_page].indices;
+    const size_t pageItems = pageIndices.size();
     const CGFloat rows = static_cast<CGFloat>((pageItems + kGuiParamColumns - 1) / kGuiParamColumns);
     const CGFloat panelHeight = std::max<CGFloat>(210, kGuiParamStartY + rows * kGuiParamRowH + 72 - 48);
 #else
     const CGFloat panelHeight = 210;
 #endif
     [uiColor(0x1d1d1d) setFill];
-    NSRectFill(NSMakeRect(24, 48, 572, panelHeight));
+    NSRectFill(NSMakeRect(kGuiPanelX, 48, kGuiPanelW, panelHeight));
     [uiColor(0x636363) setStroke];
-    NSFrameRect(NSMakeRect(24, 48, 572, panelHeight));
+    NSFrameRect(NSMakeRect(kGuiPanelX, 48, kGuiPanelW, panelHeight));
     [uiColor(0x131313) setFill];
-    NSRectFill(NSMakeRect(24, 48, 572, 22));
+    NSRectFill(NSMakeRect(kGuiPanelX, 48, kGuiPanelW, 22));
     [uiColor(0xd1d1d1) setFill];
-    NSRectFill(NSMakeRect(24, 48, 572, 2));
-    [@"ENGINE" drawAtPoint:NSMakePoint(42, 54) withAttributes:text];
+    NSRectFill(NSMakeRect(kGuiPanelX, 48, kGuiPanelW, 2));
+    [@"ENGINE" drawAtPoint:NSMakePoint(kGuiStartX, 54) withAttributes:text];
 #if S3G_HAS_RNBO_EXPORT
     for (size_t page = 0; page < totalPages; ++page) {
         NSRect tab = [self tabRect:page];
@@ -663,22 +745,23 @@ uint32_t preferredGuiHeight(const Plugin* p)
         NSRectFill(tab);
         [uiColor(page == _page ? 0xd1d1d1 : 0x626262) setStroke];
         NSFrameRect(tab);
-        [[NSString stringWithFormat:@"%zu-%zu", page * kGuiParamsPerPage + 1, std::min((page + 1) * kGuiParamsPerPage, p->rnboParams.size())] drawAtPoint:NSMakePoint(tab.origin.x + 8, tab.origin.y + 5) withAttributes:page == _page ? text : dim];
+        NSString* label = [NSString stringWithUTF8String:pages[page].label.c_str()];
+        [label drawAtPoint:NSMakePoint(tab.origin.x + 8, tab.origin.y + 5) withAttributes:page == _page ? text : dim];
     }
-    const CGFloat colW = 260;
-    const CGFloat startX = 42;
+    const CGFloat colW = kGuiColW;
+    const CGFloat startX = kGuiStartX;
     const CGFloat startY = kGuiParamStartY;
     const CGFloat controlsBottom = startY + rows * kGuiParamRowH;
-    for (size_t i = pageStart; i < pageEnd; ++i) {
-        const size_t localIndex = i - pageStart;
+    for (size_t localIndex = 0; localIndex < pageIndices.size(); ++localIndex) {
         const size_t col = localIndex % kGuiParamColumns;
         const size_t row = localIndex / kGuiParamColumns;
-        NSRect frame = NSMakeRect(startX + col * 272, startY + row * kGuiParamRowH, colW, 34);
-        const auto& param = p->rnboParams[i];
+        NSRect frame = NSMakeRect(startX + col * kGuiColStep, startY + row * kGuiParamRowH, colW, 34);
+        const auto& param = p->rnboParams[pageIndices[localIndex]];
         const double raw = p->processor.rnbo.getParameterValue(param.index);
         const double span = param.max - param.min;
         const double normalized = span > 0.0 ? (raw - param.min) / span : 0.0;
-        NSString* name = [NSString stringWithUTF8String:param.name.c_str()];
+        const std::string displayName = displayNameForParam(param);
+        NSString* name = [NSString stringWithUTF8String:displayName.c_str()];
         [self drawCompactSlider:name value:normalized frame:frame attrs:text dim:dim];
     }
 #else
@@ -693,9 +776,9 @@ uint32_t preferredGuiHeight(const Plugin* p)
 #endif
 #if S3G_HAS_RNBO_EXPORT
     const CGFloat metaY = controlsBottom + 18;
-    [mode drawAtPoint:NSMakePoint(42, metaY) withAttributes:dim];
-    [[NSString stringWithFormat:@"IO %u IN / %u OUT", kInputChannels, kOutputChannels] drawAtPoint:NSMakePoint(410, metaY) withAttributes:dim];
-    [[NSString stringWithFormat:@"PARAMS %zu  PAGE %zu/%zu", p->rnboParams.size(), _page + 1, totalPages] drawAtPoint:NSMakePoint(42, metaY + 18) withAttributes:dim];
+    [mode drawAtPoint:NSMakePoint(kGuiStartX, metaY) withAttributes:dim];
+    [[NSString stringWithFormat:@"IO %u IN / %u OUT", kInputChannels, kOutputChannels] drawAtPoint:NSMakePoint(kGuiWidth - 210, metaY) withAttributes:dim];
+    [[NSString stringWithFormat:@"PARAMS %zu  PAGE %zu/%zu  GROUP %s", p->rnboParams.size(), _page + 1, totalPages, pages[_page].label.c_str()] drawAtPoint:NSMakePoint(kGuiStartX, metaY + 18) withAttributes:dim];
 #else
     [mode drawAtPoint:NSMakePoint(42, 214) withAttributes:dim];
     [[NSString stringWithFormat:@"IO %u IN / %u OUT", kInputChannels, kOutputChannels] drawAtPoint:NSMakePoint(410, 214) withAttributes:dim];
@@ -706,10 +789,15 @@ uint32_t preferredGuiHeight(const Plugin* p)
     auto* p = static_cast<Plugin*>(_plugin);
 #if S3G_HAS_RNBO_EXPORT
     if (_drag >= 0 && static_cast<size_t>(_drag) < p->rnboParams.size()) {
-        const size_t localIndex = static_cast<size_t>(_drag) - (_page * kGuiParamsPerPage);
+        const auto pages = buildGuiParamPages(p);
+        if (_page >= pages.size()) return;
+        const auto& pageIndices = pages[_page].indices;
+        const auto found = std::find(pageIndices.begin(), pageIndices.end(), static_cast<size_t>(_drag));
+        if (found == pageIndices.end()) return;
+        const size_t localIndex = static_cast<size_t>(std::distance(pageIndices.begin(), found));
         const size_t col = localIndex % kGuiParamColumns;
         const size_t row = localIndex / kGuiParamColumns;
-        NSRect frame = NSMakeRect(42 + col * 272, kGuiParamStartY + row * kGuiParamRowH, 260, 34);
+        NSRect frame = NSMakeRect(kGuiStartX + col * kGuiColStep, kGuiParamStartY + row * kGuiParamRowH, kGuiColW, 34);
         const double normalized = [self valueForPoint:pt frame:frame];
         const auto& param = p->rnboParams[static_cast<size_t>(_drag)];
         setParam(*p, param.id, param.min + normalized * (param.max - param.min));
@@ -727,7 +815,8 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSPoint pt = [self convertPoint:event.locationInWindow fromView:nil];
 #if S3G_HAS_RNBO_EXPORT
     auto* p = static_cast<Plugin*>(_plugin);
-    const size_t totalPages = [self pageCount];
+    const auto pages = buildGuiParamPages(p);
+    const size_t totalPages = pages.size();
     for (size_t page = 0; page < totalPages; ++page) {
         if (NSPointInRect(pt, [self tabRect:page])) {
             _page = page;
@@ -736,15 +825,14 @@ uint32_t preferredGuiHeight(const Plugin* p)
             return;
         }
     }
-    const size_t pageStart = _page * kGuiParamsPerPage;
-    const size_t pageEnd = std::min(pageStart + kGuiParamsPerPage, p->rnboParams.size());
-    for (size_t i = pageStart; i < pageEnd; ++i) {
-        const size_t localIndex = i - pageStart;
+    if (_page >= pages.size()) return;
+    const auto& pageIndices = pages[_page].indices;
+    for (size_t localIndex = 0; localIndex < pageIndices.size(); ++localIndex) {
         const size_t col = localIndex % kGuiParamColumns;
         const size_t row = localIndex / kGuiParamColumns;
-        NSRect frame = NSMakeRect(42 + col * 272, kGuiParamStartY + row * kGuiParamRowH, 260, 34);
+        NSRect frame = NSMakeRect(kGuiStartX + col * kGuiColStep, kGuiParamStartY + row * kGuiParamRowH, kGuiColW, 34);
         if (NSPointInRect(pt, frame)) {
-            _drag = static_cast<int>(i);
+            _drag = static_cast<int>(pageIndices[localIndex]);
             [self setParamFromPoint:pt];
             return;
         }

@@ -56,6 +56,10 @@ cmake -S . -B build-clap \
 cmake --build build-clap
 ```
 
+By default, the CLAP bundle and plugin name come from the RNBO export folder.
+For example, `rnbo_exports/8ch_passthru` builds `s3g_8ch_passthru.clap` and
+appears in the host as `s3g 8ch passthru`.
+
 Install locally for REAPER:
 
 ```sh

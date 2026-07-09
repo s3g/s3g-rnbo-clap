@@ -20,15 +20,30 @@ set(S3G_CLAP_GIT_TAG "1.2.6" CACHE STRING "CLAP git tag or commit")
 set(S3G_RNBO_EXPORT_DIR "" CACHE PATH "Optional RNBO C++ export folder containing rnbo_source.cpp or a Max RNBO *.rnbopat.cpp source plus rnbo/RNBO.cpp")
 set(S3G_RNBO_INPUT_CHANNELS "8" CACHE STRING "Fixed CLAP input channel count for the test wrapper")
 set(S3G_RNBO_OUTPUT_CHANNELS "8" CACHE STRING "Fixed CLAP output channel count for the test wrapper")
-set(S3G_RNBO_PLUGIN_SLUG "8ch_passthru" CACHE STRING "Short identifier used for the built CLAP bundle filename")
-set(S3G_RNBO_PLUGIN_NAME "s3g RNBO 8ch Passthru" CACHE STRING "Human-readable CLAP bundle name")
+set(S3G_RNBO_PLUGIN_SLUG "" CACHE STRING "Short identifier used for the built CLAP bundle filename; defaults to the RNBO export folder name")
+set(S3G_RNBO_PLUGIN_NAME "" CACHE STRING "Human-readable CLAP bundle name; defaults to s3g plus the RNBO export folder name with underscores converted to spaces")
 set(S3G_RNBO_PLUGIN_ID "" CACHE STRING "Stable CLAP plugin id; defaults to org.s3g.s3g-rnbo-clap.<slug>")
 set(S3G_RNBO_PLUGIN_DESCRIPTION "CLAP wrapper for an RNBO C++ export." CACHE STRING "CLAP plugin description")
+
+set(S3G_RNBO_DERIVED_PLUGIN_SLUG "${S3G_RNBO_PLUGIN_SLUG}")
+if(NOT S3G_RNBO_DERIVED_PLUGIN_SLUG)
+  if(S3G_RNBO_EXPORT_DIR)
+    get_filename_component(S3G_RNBO_DERIVED_PLUGIN_SLUG "${S3G_RNBO_EXPORT_DIR}" NAME)
+  else()
+    set(S3G_RNBO_DERIVED_PLUGIN_SLUG "fallback")
+  endif()
+endif()
+
+set(S3G_RNBO_DERIVED_PLUGIN_NAME "${S3G_RNBO_PLUGIN_NAME}")
+if(NOT S3G_RNBO_DERIVED_PLUGIN_NAME)
+  string(REPLACE "_" " " S3G_RNBO_PLUGIN_NAME_SUFFIX "${S3G_RNBO_DERIVED_PLUGIN_SLUG}")
+  set(S3G_RNBO_DERIVED_PLUGIN_NAME "s3g ${S3G_RNBO_PLUGIN_NAME_SUFFIX}")
+endif()
 
 if(S3G_RNBO_PLUGIN_ID)
   set(S3G_RNBO_EFFECTIVE_PLUGIN_ID "${S3G_RNBO_PLUGIN_ID}")
 else()
-  string(REPLACE "_" "-" S3G_RNBO_PLUGIN_ID_SUFFIX "${S3G_RNBO_PLUGIN_SLUG}")
+  string(REPLACE "_" "-" S3G_RNBO_PLUGIN_ID_SUFFIX "${S3G_RNBO_DERIVED_PLUGIN_SLUG}")
   set(S3G_RNBO_EFFECTIVE_PLUGIN_ID "org.s3g.s3g-rnbo-clap.${S3G_RNBO_PLUGIN_ID_SUFFIX}")
 endif()
 
@@ -103,7 +118,7 @@ if(S3G_BUILD_CLAP)
     S3G_RNBO_INPUT_CHANNELS=${S3G_RNBO_INPUT_CHANNELS}
     S3G_RNBO_OUTPUT_CHANNELS=${S3G_RNBO_OUTPUT_CHANNELS}
     S3G_RNBO_PLUGIN_ID="${S3G_RNBO_EFFECTIVE_PLUGIN_ID}"
-    S3G_RNBO_PLUGIN_NAME="${S3G_RNBO_PLUGIN_NAME}"
+    S3G_RNBO_PLUGIN_NAME="${S3G_RNBO_DERIVED_PLUGIN_NAME}"
     S3G_RNBO_PLUGIN_DESCRIPTION="${S3G_RNBO_PLUGIN_DESCRIPTION}"
   )
 
@@ -114,7 +129,7 @@ if(S3G_BUILD_CLAP)
 
   set_target_properties(s3g_rnbo_test_clap PROPERTIES
     PREFIX ""
-    OUTPUT_NAME "s3g_rnbo_${S3G_RNBO_PLUGIN_SLUG}"
+    OUTPUT_NAME "s3g_${S3G_RNBO_DERIVED_PLUGIN_SLUG}"
   )
 
   if(APPLE)
@@ -122,7 +137,7 @@ if(S3G_BUILD_CLAP)
       BUNDLE TRUE
       BUNDLE_EXTENSION "clap"
       MACOSX_BUNDLE_GUI_IDENTIFIER "${S3G_RNBO_EFFECTIVE_PLUGIN_ID}"
-      MACOSX_BUNDLE_BUNDLE_NAME "${S3G_RNBO_PLUGIN_NAME}"
+      MACOSX_BUNDLE_BUNDLE_NAME "${S3G_RNBO_DERIVED_PLUGIN_NAME}"
       MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
       MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     )
