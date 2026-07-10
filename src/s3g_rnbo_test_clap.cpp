@@ -973,7 +973,7 @@ std::string groupNameForParam(const RnboParam& param)
     if (splitChannelParamName(param.name, channel, group)) return group;
     const auto slash = param.name.find(static_cast<char>(47));
     if (slash != std::string::npos && slash > 0) return param.name.substr(0, slash);
-    return param.name.empty() ? "params" : param.name;
+    return "params";
 }
 
 std::string displayNameForParam(const RnboParam& param)
