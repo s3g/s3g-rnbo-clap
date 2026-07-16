@@ -7,6 +7,12 @@ The goal is to keep RNBO-generated DSP experiments separate from the BSD-3
 native C++ `s3g-dsp` repo while preserving the same macOS + REAPER workflow and
 minimal grayscale GUI language.
 
+GUI work in this wrapper should inherit the current `s3g-dsp` custom CLAP
+style rules. Treat `s3g-dsp/docs/gui-style-guide.md` as the source of truth:
+flat gray/black toolbox panels, regular-weight monospaced text, muted label and
+status colors, aligned label/menu rows, panel heights fitted to visible
+controls, and no reliance on the REAPER default UI as the main surface.
+
 The current target is macOS + REAPER. Other hosts or operating systems may work
 later, but they are not the supported release target for these wrappers.
 
@@ -115,6 +121,12 @@ When an RNBO export is present, the CLAP wrapper discovers visible RNBO params
 and draws controls for them in the plugin GUI. Channel-style names such as
 `ch01_gain` are grouped by suffix, and slash paths such as
 `shared_reverb/rv_send` are grouped by the prefix before the slash.
+
+The wrapper GUI follows the corrected `s3g-dsp` family rules rather than an
+RNBO-specific skin: near-black background, dark toolbox panel with a header
+strip and thin top line, normal-weight titles, muted gray labels/readouts, and
+compact square sliders, buttons, and popup-style selectors. New wrapper
+controls should reuse that vocabulary before adding local drawing exceptions.
 
 Stepped enum parameters are shown as popup-style selectors. Large parameter
 sets are split into pages, and the page buttons wrap into multiple rows when
