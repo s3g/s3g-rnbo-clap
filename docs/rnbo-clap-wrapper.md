@@ -28,6 +28,19 @@ RNBO wrapper GUI edits should track the corrected `s3g-dsp` CLAP style guide in
   from one RNBO export to another.
 - Keep `PK`, MIDI activity, source status, IO, page, and group information as
   compact status readouts rather than primary editable controls.
+- Preserve the name/display split used by `s3g-dsp`: CLAP descriptors and
+  macOS bundle names stay readable in REAPER, for example
+  `s3g rnbo Modal Stress 24ch`, while the custom Cocoa GUI title is formatted
+  at draw time as `s3g RNBO MODAL STRESS 24CH`.
+- Do not fix GUI title casing by uppercasing `S3G_RNBO_PLUGIN_NAME`,
+  `CFBundleName`, or the CMake-generated host name. The source of truth is
+  `guiPluginTitle()` in `src/s3g_rnbo_test_clap.cpp`.
+- RNBO-derived page, parameter, and enum labels are uppercased only inside the
+  custom GUI. Parameter names exposed to the host/RNBO remain unchanged.
+
+Run `./scripts/audit-gui-style.sh` after GUI or naming edits. It catches the
+most likely drift: old bright colors, bold fonts, missing GUI title formatting,
+and accidental all-caps host metadata generation.
 
 Future passes can add hidden/internal parameter metadata, file dependency
 loading, and multichannel layout helpers.

@@ -81,6 +81,12 @@ endif()
 add_executable(s3g_rnbo_smoke tests/smoke.cpp)
 target_include_directories(s3g_rnbo_smoke PRIVATE src)
 
+add_custom_target(audit_gui_style
+  COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit-gui-style.sh"
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  COMMENT "Auditing s3g RNBO CLAP GUI style and host-name rules"
+)
+
 if(S3G_BUILD_CLAP)
   if(NOT S3G_CLAP_INCLUDE_DIR)
     if(NOT S3G_FETCH_CLAP)

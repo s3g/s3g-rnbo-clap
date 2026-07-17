@@ -12,6 +12,10 @@ style rules. Treat `s3g-dsp/docs/gui-style-guide.md` as the source of truth:
 flat gray/black toolbox panels, regular-weight monospaced text, muted label and
 status colors, aligned label/menu rows, panel heights fitted to visible
 controls, and no reliance on the REAPER default UI as the main surface.
+Keep host-facing plugin names and bundle names readable in REAPER, following
+the sibling `s3g-dsp` convention such as `s3g rnbo Modal Stress 24ch`. The
+custom GUI canvas is the only place where the display title is forced to
+`s3g` plus uppercase product text, such as `s3g RNBO MODAL STRESS 24CH`.
 
 The current target is macOS + REAPER. Other hosts or operating systems may work
 later, but they are not the supported release target for these wrappers.
@@ -127,6 +131,16 @@ RNBO-specific skin: near-black background, dark toolbox panel with a header
 strip and thin top line, normal-weight titles, muted gray labels/readouts, and
 compact square sliders, buttons, and popup-style selectors. New wrapper
 controls should reuse that vocabulary before adding local drawing exceptions.
+The host/plugin descriptor name intentionally remains REAPER-readable and is
+not all-caps; the Cocoa GUI title is formatted at draw time by the wrapper so
+the in-plugin title matches the `s3g-dsp` panel style. RNBO page names,
+parameter names, and enum labels are also uppercased only inside the custom GUI.
+
+Before trusting a rebuilt wrapper visually, run:
+
+```sh
+./scripts/audit-gui-style.sh
+```
 
 Stepped enum parameters are shown as popup-style selectors. Large parameter
 sets are split into pages, and the page buttons wrap into multiple rows when

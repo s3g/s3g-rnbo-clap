@@ -932,16 +932,46 @@ constexpr CGFloat kGuiTabRowGap = 4;
 constexpr CGFloat kGuiEnumRowH = 20;
 
 constexpr uint32_t kGuiBg = 0x0c0c0c;
-constexpr uint32_t kGuiPanelFill = 0x1b1b1b;
+constexpr uint32_t kGuiPanelFill = 0x1d1d1d;
 constexpr uint32_t kGuiPanelHeader = 0x131313;
 constexpr uint32_t kGuiControlFill = 0x151515;
 constexpr uint32_t kGuiControlFillActive = 0x303030;
-constexpr uint32_t kGuiTrackFill = 0x111111;
-constexpr uint32_t kGuiBorder = 0x5c5c5c;
-constexpr uint32_t kGuiBorderActive = 0xa8a8a8;
+constexpr uint32_t kGuiActionFill = 0x202020;
+constexpr uint32_t kGuiActionInner = 0x343434;
+constexpr uint32_t kGuiDropdownBg = 0x080808;
+constexpr uint32_t kGuiDropdownBorder = 0x6c6c6c;
+constexpr uint32_t kGuiDropdownRow = 0x292929;
+constexpr uint32_t kGuiTrackFill = 0x131313;
+constexpr uint32_t kGuiBorder = 0x565656;
+constexpr uint32_t kGuiBorderActive = 0xb8b8b8;
 constexpr uint32_t kGuiLabel = 0xa8a8a8;
 constexpr uint32_t kGuiValue = 0x929292;
 constexpr uint32_t kGuiTitle = 0xc8c8c8;
+constexpr uint32_t kGuiText = 0xc9c9c9;
+constexpr uint32_t kGuiFill = 0x7f7f7f;
+
+// Host names stay REAPER-readable; only the custom Cocoa canvas applies the
+// s3g GUI convention of lowercase "s3g" plus uppercase product text.
+std::string uppercaseGuiLabel(std::string text, bool preserveS3g = false)
+{
+    const size_t start = preserveS3g && text.rfind("s3g", 0) == 0 ? 3u : 0u;
+    for (size_t i = start; i < text.size(); ++i) {
+        text[i] = static_cast<char>(std::toupper(static_cast<unsigned char>(text[i])));
+    }
+    return text;
+}
+
+NSString* guiNSStringUpper(const std::string& text)
+{
+    const std::string upper = uppercaseGuiLabel(text);
+    return [NSString stringWithUTF8String:upper.c_str()];
+}
+
+NSString* guiPluginTitle()
+{
+    const std::string title = uppercaseGuiLabel(S3G_RNBO_PLUGIN_NAME, true);
+    return [NSString stringWithUTF8String:title.c_str()];
+}
 
 size_t guiTabColumns()
 {
@@ -1127,9 +1157,9 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSFrameRect(track);
     NSRect fill = NSInsetRect(track, 1, 1);
     fill.size.width *= static_cast<CGFloat>(std::clamp(value, 0.0, 1.0));
-    [uiColor(kGuiLabel) setFill];
+    [uiColor(kGuiFill) setFill];
     NSRectFill(fill);
-    [uiColor(kGuiTitle) setFill];
+    [uiColor(kGuiText) setFill];
     NSRectFill(NSMakeRect(track.origin.x + track.size.width * value - 1.5, track.origin.y - 2, 3, 14));
     [[NSString stringWithFormat:@"%.3f", value] drawAtPoint:NSMakePoint(410, y - 2) withAttributes:attrs];
 }
@@ -1144,9 +1174,9 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSFrameRect(track);
     NSRect fill = NSInsetRect(track, 1, 1);
     fill.size.width *= static_cast<CGFloat>(clamped);
-    [uiColor(kGuiLabel) setFill];
+    [uiColor(kGuiFill) setFill];
     NSRectFill(fill);
-    [uiColor(kGuiTitle) setFill];
+    [uiColor(kGuiText) setFill];
     NSRectFill(NSMakeRect(track.origin.x + track.size.width * clamped - 1.5, track.origin.y - 2, 3, 12));
     [compactParamValueText(value) drawAtPoint:NSMakePoint(frame.origin.x + frame.size.width - 58, frame.origin.y + 13) withAttributes:attrs];
 }
@@ -1162,7 +1192,9 @@ uint32_t preferredGuiHeight(const Plugin* p)
     const int count = static_cast<int>(param.enumValues.size());
     const int index = std::clamp(static_cast<int>(std::lround(value - param.min)), 0, std::max(0, count - 1));
     if (count > 0) {
-        NSString* label = [NSString stringWithUTF8String:param.enumValues[static_cast<size_t>(index)].c_str()];
+        NSString* label = guiNSStringUpper(param.enumValues[static_cast<size_t>(index)]);
+        [uiColor(kGuiFill) setFill];
+        NSRectFill(NSMakeRect(box.origin.x + 1, box.origin.y + 1, 2, box.size.height - 2));
         [label drawAtPoint:NSMakePoint(box.origin.x + 6, box.origin.y + 3) withAttributes:attrs];
         [@"v" drawAtPoint:NSMakePoint(box.origin.x + box.size.width - 15, box.origin.y + 3) withAttributes:dim];
     }
@@ -1233,11 +1265,15 @@ uint32_t preferredGuiHeight(const Plugin* p)
 #endif
 - (void)drawButton:(NSString*)label frame:(NSRect)frame attrs:(NSDictionary*)attrs
 {
-    [uiColor(kGuiControlFill) setFill];
+    [uiColor(kGuiActionFill) setFill];
     NSRectFill(frame);
-    [uiColor(kGuiBorder) setStroke];
+    [uiColor(kGuiBorderActive) setStroke];
     NSFrameRect(frame);
-    [label drawAtPoint:NSMakePoint(frame.origin.x + 10, frame.origin.y + 5) withAttributes:attrs];
+    [uiColor(kGuiActionInner) setStroke];
+    NSFrameRect(NSInsetRect(frame, 1.0, 1.0));
+    const NSSize size = [label sizeWithAttributes:attrs];
+    [label drawAtPoint:NSMakePoint(frame.origin.x + (frame.size.width - size.width) * 0.5, frame.origin.y + 5)
+        withAttributes:attrs];
 }
 - (void)drawRandomAmountWithAttrs:(NSDictionary*)attrs dim:(NSDictionary*)dim
 {
@@ -1252,9 +1288,9 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSFrameRect(track);
     NSRect fill = NSInsetRect(track, 1, 1);
     fill.size.width *= static_cast<CGFloat>(value);
-    [uiColor(kGuiLabel) setFill];
+    [uiColor(kGuiFill) setFill];
     NSRectFill(fill);
-    [uiColor(kGuiTitle) setFill];
+    [uiColor(kGuiText) setFill];
     NSRectFill(NSMakeRect(track.origin.x + track.size.width * value - 1.5, track.origin.y - 2, 3, 12));
     [[NSString stringWithFormat:@"%.2f", value] drawAtPoint:NSMakePoint(frame.origin.x + frame.size.width - 26, frame.origin.y + 5) withAttributes:attrs];
 }
@@ -1269,11 +1305,11 @@ uint32_t preferredGuiHeight(const Plugin* p)
     }
     NSRect frame = [self midiActivityRect];
     const double activity = std::clamp(static_cast<double>(p->midiActivity.load(std::memory_order_relaxed)), 0.0, 1.0);
-    [uiColor(activity > 0.05 ? kGuiLabel : kGuiControlFill) setFill];
+    [uiColor(activity > 0.05 ? kGuiControlFillActive : kGuiControlFill) setFill];
     NSRectFill(frame);
-    [uiColor(activity > 0.05 ? kGuiTitle : kGuiBorder) setStroke];
+    [uiColor(activity > 0.05 ? kGuiBorderActive : kGuiBorder) setStroke];
     NSFrameRect(frame);
-    [@"M" drawAtPoint:NSMakePoint(frame.origin.x + 9, frame.origin.y + 5) withAttributes:activity > 0.05 ? @{ NSFontAttributeName:[NSFont fontWithName:@"Menlo" size:10] ?: [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular], NSForegroundColorAttributeName:uiColor(0x0c0c0c) } : dim];
+    [@"M" drawAtPoint:NSMakePoint(frame.origin.x + 9, frame.origin.y + 5) withAttributes:activity > 0.05 ? attrs : dim];
 #else
     (void)attrs;
     (void)dim;
@@ -1323,9 +1359,11 @@ uint32_t preferredGuiHeight(const Plugin* p)
     const auto& param = p->rnboParams[static_cast<size_t>(_openEnum)];
     if (!isEnumParam(param)) return;
     NSRect menu = [self enumMenuRectForParam:param frame:frame];
-    [uiColor(kGuiTrackFill) setFill];
+    [uiColor(kGuiDropdownBg) setFill];
+    NSRectFill(NSInsetRect(menu, -2.0, -2.0));
+    [uiColor(kGuiControlFill) setFill];
     NSRectFill(menu);
-    [uiColor(kGuiBorderActive) setStroke];
+    [uiColor(kGuiDropdownBorder) setStroke];
     NSFrameRect(menu);
     const double value = p->processor.rnbo.getParameterValue(param.index);
     const int selected = std::clamp(static_cast<int>(std::lround(value - param.min)), 0, static_cast<int>(param.enumValues.size()) - 1);
@@ -1334,10 +1372,22 @@ uint32_t preferredGuiHeight(const Plugin* p)
         const bool hovered = static_cast<int>(i) == _hoverEnumItem;
         const bool active = static_cast<int>(i) == selected;
         if (hovered || active) {
-            [uiColor(hovered ? 0x404040 : kGuiControlFillActive) setFill];
+            [uiColor(hovered ? kGuiActionInner : kGuiDropdownRow) setFill];
+            NSRectFill(NSInsetRect(item, 1, 1));
+        } else if ((i % 2u) == 1u) {
+            [uiColor(kGuiPanelHeader) setFill];
             NSRectFill(NSInsetRect(item, 1, 1));
         }
-        NSString* label = [NSString stringWithUTF8String:param.enumValues[i].c_str()];
+        if (hovered || active) {
+            [uiColor(kGuiFill) setFill];
+            NSRectFill(NSMakeRect(item.origin.x + 2.0, item.origin.y + 2.0, 3.0, item.size.height - 4.0));
+        }
+        if (i > 0) {
+            [uiColor(0x3a3a3a) setStroke];
+            [NSBezierPath strokeLineFromPoint:NSMakePoint(item.origin.x, item.origin.y)
+                                      toPoint:NSMakePoint(NSMaxX(item), item.origin.y)];
+        }
+        NSString* label = guiNSStringUpper(param.enumValues[i]);
         [label drawAtPoint:NSMakePoint(item.origin.x + 6, item.origin.y + 4) withAttributes:(hovered || active) ? attrs : dim];
     }
 #else
@@ -1352,10 +1402,11 @@ uint32_t preferredGuiHeight(const Plugin* p)
     [uiColor(kGuiBg) setFill];
     NSRectFill(self.bounds);
     NSFont* uiFont = [NSFont fontWithName:@"Menlo" size:10] ?: [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular];
+    NSFont* titleFont = [NSFont fontWithName:@"Menlo" size:10.5] ?: [NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightRegular];
     NSDictionary* text = @{ NSFontAttributeName:uiFont, NSForegroundColorAttributeName:uiColor(kGuiLabel) };
     NSDictionary* dim = @{ NSFontAttributeName:uiFont, NSForegroundColorAttributeName:uiColor(kGuiValue) };
-    NSDictionary* title = @{ NSFontAttributeName:uiFont, NSForegroundColorAttributeName:uiColor(kGuiTitle) };
-    [[NSString stringWithUTF8String:S3G_RNBO_PLUGIN_NAME] drawAtPoint:NSMakePoint(18, 16) withAttributes:title];
+    NSDictionary* title = @{ NSFontAttributeName:titleFont, NSForegroundColorAttributeName:uiColor(kGuiTitle) };
+    [guiPluginTitle() drawAtPoint:NSMakePoint(18, 14) withAttributes:title];
 #if S3G_HAS_RNBO_EXPORT
     [self drawButton:@"LOAD" frame:[self loadButtonRect] attrs:text];
 #endif
@@ -1383,7 +1434,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSRectFill(NSMakeRect(kGuiPanelX, 48, kGuiPanelW, 22));
     [uiColor(kGuiBorderActive) setFill];
     NSRectFill(NSMakeRect(kGuiPanelX, 48, kGuiPanelW, 2));
-    [@"ENGINE" drawAtPoint:NSMakePoint(kGuiStartX, 54) withAttributes:title];
+    [@"ENGINE" drawAtPoint:NSMakePoint(kGuiStartX, 54) withAttributes:text];
 #if S3G_HAS_RNBO_EXPORT
     for (size_t page = 0; page < totalPages; ++page) {
         NSRect tab = [self tabRect:page];
@@ -1391,7 +1442,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
         NSRectFill(tab);
         [uiColor(page == _page ? kGuiBorderActive : kGuiBorder) setStroke];
         NSFrameRect(tab);
-        NSString* label = [NSString stringWithUTF8String:pages[page].label.c_str()];
+        NSString* label = guiNSStringUpper(pages[page].label);
         [label drawAtPoint:NSMakePoint(tab.origin.x + 8, tab.origin.y + 5) withAttributes:page == _page ? text : dim];
     }
     const CGFloat colW = kGuiColW;
@@ -1406,7 +1457,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
         const double span = param.max - param.min;
         const double normalized = span > 0.0 ? (raw - param.min) / span : 0.0;
         const std::string displayName = displayNameForParam(param);
-        NSString* name = [NSString stringWithUTF8String:displayName.c_str()];
+        NSString* name = guiNSStringUpper(displayName);
         if (isEnumParam(param)) [self drawCompactEnum:name param:param value:raw frame:frame attrs:text dim:dim];
         else [self drawCompactSlider:name normalized:normalized value:raw frame:frame attrs:text dim:dim];
     }
