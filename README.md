@@ -13,9 +13,14 @@ flat gray/black toolbox panels, regular-weight monospaced text, muted label and
 status colors, aligned label/menu rows, panel heights fitted to visible
 controls, and no reliance on the REAPER default UI as the main surface.
 Keep host-facing plugin names and bundle names readable in REAPER, following
-the sibling `s3g-dsp` convention such as `s3g rnbo Modal Stress 24ch`. The
+the sibling `s3g-dsp` family-first convention such as
+`s3g RNBO Modal Stress 24ch`. The
 custom GUI canvas is the only place where the display title is forced to
 `s3g` plus uppercase product text, such as `s3g RNBO MODAL STRESS 24CH`.
+
+The current wrapper contract is synchronized with `s3g-dsp` 0.6.0. When a
+sibling checkout is available, the GUI audit also checks the upstream style
+guide for the layout, peak-display, and reset conventions this repo implements.
 
 The current target is macOS + REAPER. Other hosts or operating systems may work
 later, but they are not the supported release target for these wrappers.
@@ -28,6 +33,9 @@ package that defines many of the workflows these plugin builds support.
 [`s3g-dsp`](https://github.com/s3g/s3g-dsp) is the sibling native C++ CLAP
 plugin project. `s3g-rnbo-clap` stays separate so RNBO/Max-generated plugin
 builds can be tested without changing the BSD-3 native DSP repo.
+
+[`s3g-max`](https://github.com/s3g/s3g-max) is the related native Max/MSP
+package. It wraps selected `s3g-dsp` engines directly rather than RNBO exports.
 
 ## License Boundary
 
@@ -91,6 +99,10 @@ Install locally for REAPER:
 ./scripts/install-clap-bundles.sh
 ```
 
+The installer verifies source and existing bundle identities, installs into
+`~/Library/Audio/Plug-Ins/CLAP/s3g-rnbo-clap/`, and backs up a verified prior
+collection before replacement. Use `--dry-run` to preview the operation.
+
 ## RNBO Patch Authoring Notes
 
 Local Max/RNBO patch work can live in `max_patches/`, and generated RNBO C++
@@ -135,6 +147,9 @@ The host/plugin descriptor name intentionally remains REAPER-readable and is
 not all-caps; the Cocoa GUI title is formatted at draw time by the wrapper so
 the in-plugin title matches the `s3g-dsp` panel style. RNBO page names,
 parameter names, and enum labels are also uppercased only inside the custom GUI.
+The first panel begins at the shared 42 px content line, peak status is shown in
+dBFS, timer repainting pauses while the host/view is inactive, and continuous
+sliders reset to their declared defaults on double-click.
 
 Before trusting a rebuilt wrapper visually, run:
 
@@ -162,6 +177,9 @@ filename and channel count. CLAP state stores the selected source path for
 recall; if a session is restored, reload the file if the RNBO patch needs the
 buffer contents before playback.
 
+State reads and writes support hosts that transfer data in small chunks and
+reject oversized or non-finite state payloads before applying parameter values.
+
 The wrapper applies a startup/reset guard to reduce audible spikes from RNBO
 patch initialization, delay lines, or reverb state when a plugin is first
 inserted or reset by the host. It silently pre-rolls the RNBO processor, then
@@ -174,7 +192,7 @@ patch development.
 Built CLAP plugins should be installed in the user CLAP plugin folder:
 
 ```text
-~/Library/Audio/Plug-Ins/CLAP/
+~/Library/Audio/Plug-Ins/CLAP/s3g-rnbo-clap/
 ```
 
 After copying or installing a `.clap` bundle, open REAPER and rescan CLAP
@@ -186,21 +204,31 @@ inserting the plugin. For example, an eight-channel RNBO export should be used
 on an eight-channel track so the plugin pin connector and following meters show
 the expected channels.
 
-If a pre-release download includes a ready-to-use `.clap` bundle, install that
-bundle directly. The RNBO-generated C++ source is not needed for normal audio
-use.
+If a pre-release download includes ready-to-use `.clap` bundles, use its
+identity-checking installer. The RNBO-generated C++ source is not needed for
+normal audio use.
 
-Stage a pre-release folder without making a zip:
+Stage a pre-release folder without making a zip from a matching Release build:
 
 ```sh
-./scripts/stage-dist.sh
+cmake -S . -B build-clap-release \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DS3G_RNBO_EXPORT_DIR=rnbo_exports/test_patch \
+  -DS3G_RNBO_INPUT_CHANNELS=8 \
+  -DS3G_RNBO_OUTPUT_CHANNELS=8
+cmake --build build-clap-release
+./scripts/stage-dist.sh build-clap-release
 ```
 
-The staged folder is:
+The default versioned staged folder is:
 
 ```text
-dist/s3g-rnbo-clap-macos-clap-pre-release/
+dist/s3g-rnbo-clap-macos-clap-0.1.0-pre/
 ```
+
+Staging rebuilds the Release tree, requires arm64 bundles, validates identities,
+ad-hoc signs the staged copies, records build provenance, and includes the
+collection installer, license, and third-party notices.
 
 ## Channel Count
 

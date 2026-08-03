@@ -44,6 +44,8 @@ namespace {
 constexpr uint32_t kInputChannels = S3G_RNBO_INPUT_CHANNELS;
 constexpr uint32_t kOutputChannels = S3G_RNBO_OUTPUT_CHANNELS;
 constexpr uint32_t kStateVersion = 1;
+constexpr uint32_t kMaxStateParamCount = 16384;
+constexpr uint32_t kMaxStateSourcePathBytes = 4096;
 constexpr clap_id kRnboParamBase = 1000;
 constexpr float kOutputSoftLimit = 0.98f;
 
@@ -764,7 +766,7 @@ bool writeFull(const clap_ostream_t* stream, const void* data, size_t size)
     const auto* cursor = static_cast<const uint8_t*>(data);
     while (size > 0) {
         const int64_t n = stream->write(stream, cursor, size);
-        if (n <= 0) return false;
+        if (n <= 0 || static_cast<uint64_t>(n) > size) return false;
         cursor += n;
         size -= static_cast<size_t>(n);
     }
@@ -776,7 +778,7 @@ bool readFull(const clap_istream_t* stream, void* data, size_t size)
     auto* cursor = static_cast<uint8_t*>(data);
     while (size > 0) {
         const int64_t n = stream->read(stream, cursor, size);
-        if (n <= 0) return false;
+        if (n <= 0 || static_cast<uint64_t>(n) > size) return false;
         cursor += n;
         size -= static_cast<size_t>(n);
     }
@@ -787,13 +789,15 @@ bool stateSave(const clap_plugin_t* plugin, const clap_ostream_t* stream)
 {
 #if S3G_HAS_RNBO_EXPORT
     auto* p = self(plugin);
+    if (p->rnboParams.size() > kMaxStateParamCount) return false;
     StateHeader header {};
     header.count = static_cast<uint32_t>(p->rnboParams.size());
-    header.sourcePathBytes = static_cast<uint32_t>(std::min<size_t>(p->processor.sourcePath.size(), 4096u));
+    header.sourcePathBytes = static_cast<uint32_t>(
+        std::min<size_t>(p->processor.sourcePath.size(), kMaxStateSourcePathBytes));
     if (!stream || !stream->write || !writeFull(stream, &header, sizeof(header))) return false;
     for (const auto& param : p->rnboParams) {
         const double value = p->processor.rnbo.getParameterValue(param.index);
-        if (!writeFull(stream, &value, sizeof(value))) return false;
+        if (!std::isfinite(value) || !writeFull(stream, &value, sizeof(value))) return false;
     }
     if (header.sourcePathBytes > 0) {
         if (!writeFull(stream, p->processor.sourcePath.data(), header.sourcePathBytes)) return false;
@@ -812,17 +816,35 @@ bool stateLoad(const clap_plugin_t* plugin, const clap_istream_t* stream)
     auto* p = self(plugin);
     StateHeader header {};
     if (!stream || !stream->read || !readFull(stream, &header, sizeof(header)) || header.version != kStateVersion) return false;
-    const uint32_t n = std::min<uint32_t>(header.count, static_cast<uint32_t>(p->rnboParams.size()));
-    for (uint32_t i = 0; i < header.count; ++i) {
-        double value = 0.0;
-        if (!readFull(stream, &value, sizeof(value))) return false;
-        if (i < n) p->processor.rnbo.setParameterValue(p->rnboParams[i].index, value);
+    if (header.count > kMaxStateParamCount
+        || header.sourcePathBytes > kMaxStateSourcePathBytes) {
+        return false;
     }
-    if (header.sourcePathBytes > 0 && header.sourcePathBytes <= 4096u) {
-        std::string path(header.sourcePathBytes, '\0');
+    std::vector<double> values(header.count, 0.0);
+    for (uint32_t i = 0; i < header.count; ++i) {
+        if (!readFull(stream, &values[i], sizeof(values[i]))
+            || !std::isfinite(values[i])) {
+            return false;
+        }
+    }
+    std::string path;
+    if (header.sourcePathBytes > 0) {
+        path.assign(header.sourcePathBytes, '\0');
         if (!readFull(stream, path.data(), path.size())) return false;
-        p->processor.sourcePath = path;
-        p->processor.sourceStatus = "RELOAD " + path.substr(path.find_last_of("/\\") == std::string::npos ? 0 : path.find_last_of("/\\") + 1);
+    }
+
+    const uint32_t n = std::min<uint32_t>(
+        header.count, static_cast<uint32_t>(p->rnboParams.size()));
+    for (uint32_t i = 0; i < n; ++i) {
+        setParam(*p, p->rnboParams[i].id, values[i]);
+    }
+    p->processor.sourcePath = path;
+    if (!path.empty()) {
+        const size_t slash = path.find_last_of("/\\");
+        p->processor.sourceStatus = "RELOAD "
+            + path.substr(slash == std::string::npos ? 0 : slash + 1);
+    } else {
+        p->processor.sourceStatus = "NO FILE";
     }
 #if defined(__APPLE__)
     if (p->guiView) [static_cast<NSView*>(p->guiView) setNeedsDisplay:YES];
@@ -831,7 +853,15 @@ bool stateLoad(const clap_plugin_t* plugin, const clap_istream_t* stream)
 #else
     SavedState state {};
     if (!stream || !stream->read || !readFull(stream, &state, sizeof(state)) || state.version != kStateVersion) return false;
-    self(plugin)->params = state.params;
+    if (!std::isfinite(state.params.gain)
+        || !std::isfinite(state.params.mix)
+        || !std::isfinite(state.params.output)) {
+        return false;
+    }
+    auto* p = self(plugin);
+    setParam(*p, kGain, state.params.gain);
+    setParam(*p, kMix, state.params.mix);
+    setParam(*p, kOutput, state.params.output);
     return true;
 #endif
 }
@@ -918,11 +948,14 @@ constexpr uint32_t kGuiFallbackHeight = 320;
 constexpr uint32_t kGuiPagedHeight = 520;
 constexpr size_t kGuiParamsPerPage = 24;
 constexpr size_t kGuiParamColumns = 4;
+constexpr CGFloat kGuiContentTop = 42;
+constexpr CGFloat kGuiPanelHeaderH = 21;
 constexpr CGFloat kGuiParamStartY = 124;
 constexpr CGFloat kGuiParamRowH = 42;
 constexpr CGFloat kGuiPanelX = 24;
 constexpr CGFloat kGuiPanelW = 932;
-constexpr CGFloat kGuiStartX = 42;
+constexpr CGFloat kGuiPanelTitleX = kGuiPanelX + 8;
+constexpr CGFloat kGuiStartX = kGuiPanelX + 16;
 constexpr CGFloat kGuiColW = 214;
 constexpr CGFloat kGuiColStep = 226;
 constexpr CGFloat kGuiTabW = 92;
@@ -971,6 +1004,12 @@ NSString* guiPluginTitle()
 {
     const std::string title = uppercaseGuiLabel(S3G_RNBO_PLUGIN_NAME, true);
     return [NSString stringWithUTF8String:title.c_str()];
+}
+
+NSString* guiPeakDbText(float peak)
+{
+    return [NSString stringWithFormat:@"PK %+4.1f",
+        20.0 * std::log10(std::max(0.000001f, peak))];
 }
 
 size_t guiTabColumns()
@@ -1130,6 +1169,10 @@ uint32_t preferredGuiHeight(const Plugin* p)
 - (void)tick:(NSTimer*)timer
 {
     (void)timer;
+    if (![NSApp isActive] || !self.window || ![self.window isVisible]
+        || [self isHiddenOrHasHiddenAncestor]) {
+        return;
+    }
     [self setNeedsDisplay:YES];
 }
 - (void)updateTrackingAreas
@@ -1149,7 +1192,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
 - (BOOL)isFlipped { return YES; }
 - (void)drawSlider:(NSString*)name value:(double)value y:(CGFloat)y attrs:(NSDictionary*)attrs dim:(NSDictionary*)dim
 {
-    [name drawAtPoint:NSMakePoint(42, y - 2) withAttributes:dim];
+    [name drawAtPoint:NSMakePoint(kGuiStartX, y - 2) withAttributes:dim];
     NSRect track = NSMakeRect(126, y, 260, 10);
     [uiColor(kGuiTrackFill) setFill];
     NSRectFill(track);
@@ -1231,19 +1274,19 @@ uint32_t preferredGuiHeight(const Plugin* p)
 }
 - (NSRect)randomButtonRect
 {
-    return NSMakeRect(kGuiWidth - 250, 13, 62, 22);
+    return NSMakeRect(kGuiWidth - 250, 13, 62, 15);
 }
 - (NSRect)loadButtonRect
 {
-    return NSMakeRect(kGuiWidth - 320, 13, 62, 22);
+    return NSMakeRect(kGuiWidth - 320, 13, 62, 15);
 }
 - (NSRect)randomAmountRect
 {
-    return NSMakeRect(kGuiWidth - 180, 13, 82, 22);
+    return NSMakeRect(kGuiWidth - 180, 13, 82, 15);
 }
 - (NSRect)midiActivityRect
 {
-    return NSMakeRect(kGuiWidth - 90, 13, 26, 22);
+    return NSMakeRect(kGuiWidth - 90, 13, 26, 15);
 }
 - (CGFloat)currentParamStartY
 {
@@ -1272,15 +1315,16 @@ uint32_t preferredGuiHeight(const Plugin* p)
     [uiColor(kGuiActionInner) setStroke];
     NSFrameRect(NSInsetRect(frame, 1.0, 1.0));
     const NSSize size = [label sizeWithAttributes:attrs];
-    [label drawAtPoint:NSMakePoint(frame.origin.x + (frame.size.width - size.width) * 0.5, frame.origin.y + 5)
+    [label drawAtPoint:NSMakePoint(frame.origin.x + (frame.size.width - size.width) * 0.5,
+                                  frame.origin.y + (frame.size.height - size.height) * 0.5 - 0.5)
         withAttributes:attrs];
 }
 - (void)drawRandomAmountWithAttrs:(NSDictionary*)attrs dim:(NSDictionary*)dim
 {
     auto* p = static_cast<Plugin*>(_plugin);
     NSRect frame = [self randomAmountRect];
-    [@"DEV" drawAtPoint:NSMakePoint(frame.origin.x, frame.origin.y + 5) withAttributes:dim];
-    NSRect track = NSMakeRect(frame.origin.x + 30, frame.origin.y + 8, frame.size.width - 58, 8);
+    [@"DEV" drawAtPoint:NSMakePoint(frame.origin.x, frame.origin.y + 2) withAttributes:dim];
+    NSRect track = NSMakeRect(frame.origin.x + 30, frame.origin.y + 4, frame.size.width - 58, 8);
     const double value = std::clamp(static_cast<double>(p->randomAmount.load(std::memory_order_relaxed)), 0.0, 1.0);
     [uiColor(kGuiTrackFill) setFill];
     NSRectFill(track);
@@ -1292,7 +1336,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSRectFill(fill);
     [uiColor(kGuiText) setFill];
     NSRectFill(NSMakeRect(track.origin.x + track.size.width * value - 1.5, track.origin.y - 2, 3, 12));
-    [[NSString stringWithFormat:@"%.2f", value] drawAtPoint:NSMakePoint(frame.origin.x + frame.size.width - 26, frame.origin.y + 5) withAttributes:attrs];
+    [[NSString stringWithFormat:@"%.2f", value] drawAtPoint:NSMakePoint(frame.origin.x + frame.size.width - 26, frame.origin.y + 2) withAttributes:attrs];
 }
 - (void)drawMidiActivityWithAttrs:(NSDictionary*)attrs dim:(NSDictionary*)dim
 {
@@ -1309,7 +1353,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSRectFill(frame);
     [uiColor(activity > 0.05 ? kGuiBorderActive : kGuiBorder) setStroke];
     NSFrameRect(frame);
-    [@"M" drawAtPoint:NSMakePoint(frame.origin.x + 9, frame.origin.y + 5) withAttributes:activity > 0.05 ? attrs : dim];
+    [@"M" drawAtPoint:NSMakePoint(frame.origin.x + 9, frame.origin.y + 2) withAttributes:activity > 0.05 ? attrs : dim];
 #else
     (void)attrs;
     (void)dim;
@@ -1319,7 +1363,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
 {
     auto* p = static_cast<Plugin*>(_plugin);
     NSRect frame = [self randomAmountRect];
-    NSRect track = NSMakeRect(frame.origin.x + 30, frame.origin.y + 8, frame.size.width - 58, 8);
+    NSRect track = NSMakeRect(frame.origin.x + 30, frame.origin.y + 4, frame.size.width - 58, 8);
     const double value = std::clamp((pt.x - track.origin.x) / track.size.width, 0.0, 1.0);
     p->randomAmount.store(static_cast<float>(value), std::memory_order_relaxed);
     [self setNeedsDisplay:YES];
@@ -1413,7 +1457,9 @@ uint32_t preferredGuiHeight(const Plugin* p)
     [self drawButton:@"RAND" frame:[self randomButtonRect] attrs:text];
     [self drawRandomAmountWithAttrs:text dim:dim];
     [self drawMidiActivityWithAttrs:text dim:dim];
-    [[NSString stringWithFormat:@"PK %.3f", p->peak.load(std::memory_order_relaxed)] drawAtPoint:NSMakePoint(kGuiWidth - 82, 16) withAttributes:dim];
+    NSString* peakText = guiPeakDbText(p->peak.load(std::memory_order_relaxed));
+    [peakText drawAtPoint:NSMakePoint(kGuiWidth - [peakText sizeWithAttributes:dim].width - 18, 14)
+           withAttributes:dim];
 #if S3G_HAS_RNBO_EXPORT
     const auto pages = buildGuiParamPages(p);
     const size_t totalPages = pages.size();
@@ -1422,19 +1468,20 @@ uint32_t preferredGuiHeight(const Plugin* p)
     const size_t pageItems = pageIndices.size();
     const CGFloat rows = static_cast<CGFloat>((pageItems + kGuiParamColumns - 1) / kGuiParamColumns);
     const CGFloat startY = guiParamStartY(totalPages);
-    const CGFloat panelHeight = std::max<CGFloat>(210, startY + rows * kGuiParamRowH + 72 - 48);
+    const CGFloat panelHeight = std::max<CGFloat>(210,
+        startY + rows * kGuiParamRowH + 72 - kGuiContentTop);
 #else
     const CGFloat panelHeight = 210;
 #endif
     [uiColor(kGuiPanelFill) setFill];
-    NSRectFill(NSMakeRect(kGuiPanelX, 48, kGuiPanelW, panelHeight));
+    NSRectFill(NSMakeRect(kGuiPanelX, kGuiContentTop, kGuiPanelW, panelHeight));
     [uiColor(kGuiBorder) setStroke];
-    NSFrameRect(NSMakeRect(kGuiPanelX, 48, kGuiPanelW, panelHeight));
+    NSFrameRect(NSMakeRect(kGuiPanelX, kGuiContentTop, kGuiPanelW, panelHeight));
     [uiColor(kGuiPanelHeader) setFill];
-    NSRectFill(NSMakeRect(kGuiPanelX, 48, kGuiPanelW, 22));
+    NSRectFill(NSMakeRect(kGuiPanelX, kGuiContentTop, kGuiPanelW, kGuiPanelHeaderH));
     [uiColor(kGuiBorderActive) setFill];
-    NSRectFill(NSMakeRect(kGuiPanelX, 48, kGuiPanelW, 2));
-    [@"ENGINE" drawAtPoint:NSMakePoint(kGuiStartX, 54) withAttributes:text];
+    NSRectFill(NSMakeRect(kGuiPanelX, kGuiContentTop, kGuiPanelW, 2));
+    [@"ENGINE" drawAtPoint:NSMakePoint(kGuiPanelTitleX, kGuiContentTop + 6) withAttributes:text];
 #if S3G_HAS_RNBO_EXPORT
     for (size_t page = 0; page < totalPages; ++page) {
         NSRect tab = [self tabRect:page];
@@ -1480,7 +1527,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
     [[NSString stringWithFormat:@"SRC %@", source] drawAtPoint:NSMakePoint(kGuiStartX, metaY + 36) withAttributes:dim];
     [self drawOpenEnumMenuWithAttrs:text dim:dim];
 #else
-    [mode drawAtPoint:NSMakePoint(42, 214) withAttributes:dim];
+    [mode drawAtPoint:NSMakePoint(kGuiStartX, 214) withAttributes:dim];
     [[NSString stringWithFormat:@"IO %u IN / %u OUT", kInputChannels, kOutputChannels] drawAtPoint:NSMakePoint(410, 214) withAttributes:dim];
 #endif
 }
@@ -1539,6 +1586,12 @@ uint32_t preferredGuiHeight(const Plugin* p)
         _drag = -2;
         _openEnum = -1;
         _hoverEnumItem = -1;
+        if ([event clickCount] >= 2) {
+            p->randomAmount.store(1.0f, std::memory_order_relaxed);
+            _drag = -1;
+            [self setNeedsDisplay:YES];
+            return;
+        }
         [self setRandomAmountFromPoint:pt];
         return;
     }
@@ -1594,6 +1647,14 @@ uint32_t preferredGuiHeight(const Plugin* p)
                 [self setNeedsDisplay:YES];
                 return;
             }
+            if (!isEnumParam(param) && [event clickCount] >= 2) {
+                _drag = -1;
+                _openEnum = -1;
+                _hoverEnumItem = -1;
+                setParam(*p, param.id, param.defaultValue);
+                [self setNeedsDisplay:YES];
+                return;
+            }
             _drag = static_cast<int>(pageIndices[localIndex]);
             _openEnum = -1;
             _hoverEnumItem = -1;
@@ -1605,6 +1666,15 @@ uint32_t preferredGuiHeight(const Plugin* p)
     const CGFloat rows[] = { 94, 128, 162 };
     for (int i = 0; i < 3; ++i) {
         if (NSPointInRect(pt, NSMakeRect(38, rows[i] - 8, 450, 26))) {
+            if ([event clickCount] >= 2) {
+                const Params defaults {};
+                const clap_id ids[] = { kGain, kMix, kOutput };
+                const double values[] = { defaults.gain, defaults.mix, defaults.output };
+                setParam(*p, ids[i], values[i]);
+                _drag = -1;
+                [self setNeedsDisplay:YES];
+                return;
+            }
             _drag = i;
             [self setParamFromPoint:pt];
             return;

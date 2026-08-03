@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(s3g_rnbo_clap VERSION 0.1.0 LANGUAGES CXX)
 
+include(CTest)
+
 if(APPLE)
   enable_language(OBJCXX)
 endif()
@@ -17,11 +19,12 @@ option(S3G_FETCH_CLAP "Fetch CLAP headers when S3G_CLAP_INCLUDE_DIR is empty" ON
 set(S3G_CLAP_INCLUDE_DIR "" CACHE PATH "Path containing clap/clap.h")
 set(S3G_CLAP_GIT_REPOSITORY "https://github.com/free-audio/clap.git" CACHE STRING "CLAP git repository")
 set(S3G_CLAP_GIT_TAG "1.2.6" CACHE STRING "CLAP git tag or commit")
+set(S3G_DSP_DIR "${CMAKE_CURRENT_LIST_DIR}/../s3g-dsp" CACHE PATH "Optional sibling s3g-dsp checkout used to audit shared GUI conventions")
 set(S3G_RNBO_EXPORT_DIR "" CACHE PATH "Optional RNBO C++ export folder containing rnbo_source.cpp or a Max RNBO *.rnbopat.cpp source plus rnbo/RNBO.cpp")
 set(S3G_RNBO_INPUT_CHANNELS "8" CACHE STRING "Fixed CLAP input channel count for the test wrapper")
 set(S3G_RNBO_OUTPUT_CHANNELS "8" CACHE STRING "Fixed CLAP output channel count for the test wrapper")
 set(S3G_RNBO_PLUGIN_SLUG "" CACHE STRING "Short identifier used for the built CLAP bundle filename; defaults to the RNBO export folder name")
-set(S3G_RNBO_PLUGIN_NAME "" CACHE STRING "Human-readable CLAP bundle name; defaults to s3g rnbo plus the title-cased RNBO export folder name")
+set(S3G_RNBO_PLUGIN_NAME "" CACHE STRING "Human-readable CLAP bundle name; defaults to s3g RNBO plus the title-cased RNBO export folder name")
 set(S3G_RNBO_PLUGIN_ID "" CACHE STRING "Stable CLAP plugin id; defaults to org.s3g.s3g-rnbo-clap.<slug>")
 set(S3G_RNBO_PLUGIN_DESCRIPTION "CLAP wrapper for an RNBO C++ export." CACHE STRING "CLAP plugin description")
 set(S3G_RNBO_PLUGIN_KIND "auto" CACHE STRING "CLAP feature kind: auto, effect, or instrument")
@@ -68,7 +71,7 @@ endfunction()
 set(S3G_RNBO_DERIVED_PLUGIN_NAME "${S3G_RNBO_PLUGIN_NAME}")
 if(NOT S3G_RNBO_DERIVED_PLUGIN_NAME)
   s3g_rnbo_title_from_slug(S3G_RNBO_PLUGIN_NAME_SUFFIX "${S3G_RNBO_DERIVED_PLUGIN_SLUG}")
-  set(S3G_RNBO_DERIVED_PLUGIN_NAME "s3g rnbo ${S3G_RNBO_PLUGIN_NAME_SUFFIX}")
+  set(S3G_RNBO_DERIVED_PLUGIN_NAME "s3g RNBO ${S3G_RNBO_PLUGIN_NAME_SUFFIX}")
 endif()
 
 if(S3G_RNBO_PLUGIN_ID)
@@ -82,10 +85,20 @@ add_executable(s3g_rnbo_smoke tests/smoke.cpp)
 target_include_directories(s3g_rnbo_smoke PRIVATE src)
 
 add_custom_target(audit_gui_style
-  COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit-gui-style.sh"
+  COMMAND "${CMAKE_COMMAND}" -E env "S3G_DSP_DIR=${S3G_DSP_DIR}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit-gui-style.sh"
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
   COMMENT "Auditing s3g RNBO CLAP GUI style and host-name rules"
 )
+
+if(BUILD_TESTING)
+  add_test(NAME s3g_rnbo_smoke COMMAND s3g_rnbo_smoke)
+  add_test(
+    NAME s3g_rnbo_gui_style
+    COMMAND "${CMAKE_COMMAND}" -E env "S3G_DSP_DIR=${S3G_DSP_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit-gui-style.sh"
+  )
+endif()
 
 if(S3G_BUILD_CLAP)
   if(NOT S3G_CLAP_INCLUDE_DIR)
@@ -178,6 +191,18 @@ if(S3G_BUILD_CLAP)
       MACOSX_BUNDLE_BUNDLE_NAME "${S3G_RNBO_DERIVED_PLUGIN_NAME}"
       MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
       MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+    )
+  endif()
+
+  if(BUILD_TESTING AND UNIX)
+    add_executable(s3g_rnbo_clap_state_smoke tests/clap_state.cpp)
+    target_include_directories(s3g_rnbo_clap_state_smoke PRIVATE
+      ${S3G_CLAP_INCLUDE_DIR}
+    )
+    target_link_libraries(s3g_rnbo_clap_state_smoke PRIVATE ${CMAKE_DL_LIBS})
+    add_test(
+      NAME s3g_rnbo_clap_state
+      COMMAND s3g_rnbo_clap_state_smoke $<TARGET_FILE:s3g_rnbo_test_clap>
     )
   endif()
 endif()
