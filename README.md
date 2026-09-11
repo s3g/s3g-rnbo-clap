@@ -1,14 +1,15 @@
 # s3g-rnbo-clap
 
 `s3g-rnbo-clap` is a small CLAP wrapper for turning RNBO C++ source exports
-into macOS CLAP plugins inside the `s3g` plugin style.
+into macOS and Windows CLAP plug-ins with the shared `s3g-dsp` VSTGUI style.
+It consumes an RNBO C++ export; it does not produce Max `.mxo`/`.mxe64` externals.
 
 The goal is to keep RNBO-generated DSP experiments separate from the BSD-3
-native C++ `s3g-dsp` repo while preserving the same macOS + REAPER workflow and
-minimal grayscale GUI language.
+native C++ `s3g-dsp` repo while preserving the same REAPER workflow and minimal grayscale GUI language on both platforms.
 
 GUI work in this wrapper should inherit the current `s3g-dsp` custom CLAP
-style rules. Treat `s3g-dsp/docs/gui-style-guide.md` as the source of truth:
+style rules. The current source of truth is the sibling project's
+`plugins/common/s3g_vstgui_foundation.{h,cpp}` and `s3g_vstgui_canvas.h`:
 flat gray/black toolbox panels, regular-weight monospaced text, muted label and
 status colors, aligned label/menu rows, panel heights fitted to visible
 controls, and no reliance on the REAPER default UI as the main surface.
@@ -18,12 +19,13 @@ the sibling `s3g-dsp` family-first convention such as
 custom GUI canvas is the only place where the display title is forced to
 `s3g` plus uppercase product text, such as `s3g RNBO MODAL STRESS 24CH`.
 
-The current wrapper contract is synchronized with `s3g-dsp` 0.6.0. When a
-sibling checkout is available, the GUI audit also checks the upstream style
-guide for the layout, peak-display, and reset conventions this repo implements.
+The VSTGUI build uses the sibling foundation directly (no copied skin or native
+DSP plug-in targets). Set `S3G_DSP_DIR` if that checkout is not next to this one.
+Fira Code and its license are bundled, with a safe platform-monospace fallback.
+Editors support proportional resizing from 65% to 200%.
 
-The current target is macOS + REAPER. Other hosts or operating systems may work
-later, but they are not the supported release target for these wrappers.
+The target is macOS and Windows x64 with REAPER. A successful Windows cross-build
+is not a substitute for testing on a Windows host.
 
 ## Related Projects
 
@@ -47,6 +49,59 @@ RNBO engine support source is MIT licensed according to Cycling '74's RNBO
 Export Licensing FAQ.
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Build Mac and Windows together from a Mac
+
+Install Xcode command-line tools, CMake, Git and MinGW-w64. With Homebrew:
+
+```sh
+brew install cmake mingw-w64
+```
+
+Export C++ from RNBO, then run from this repository:
+
+```sh
+./scripts/build-dual.sh --export rnbo_exports/test_patch --inputs 8 --outputs 8
+# A zero-input MIDI instrument, for example:
+./scripts/build-dual.sh --export rnbo_exports/test_synth --inputs 0 --outputs 24 --kind instrument
+```
+
+Both builds run concurrently with the same export, IDs, names and channel
+configuration, in independent `build-dual/<slug>/macos` and `windows` trees.
+The command reports separate logs and only creates a distribution after both
+builds succeed and their metadata/export fingerprints match:
+
+```text
+dist/s3g-rnbo-<slug>-mac-windows-<timestamp>-<unique>/
+  macOS/s3g_<slug>.clap/       # Mac bundle, font inside
+  Windows/s3g_<slug>.clap     # Windows x64 DLL
+  Windows/Resources/          # Must remain beside the Windows CLAP
+  LICENSE
+  THIRD_PARTY_NOTICES.md
+  rnbo-build-identity.txt
+```
+
+No installation or replacement of previous distributions happens automatically.
+Copy the Windows `.clap` **and its entire adjacent Resources folder together**.
+That folder contains the private font and applicable third-party licenses.
+Users do not need Max, RNBO C++ sources or a system-wide font installation.
+
+By default, dependencies are fetched at pinned revisions. For offline/repeated
+builds, supply existing source directories with `S3G_CLAP_INCLUDE_DIR`,
+`S3G_VSTGUI_SOURCE_DIR` and `S3G_DR_LIBS_SOURCE_DIR`. Other overrides are
+`S3G_DSP_DIR`, `S3G_BUILD_JOBS` (per platform),
+`S3G_RNBO_DUAL_BUILD_ROOT` and `S3G_RNBO_DUAL_DIST_ROOT`.
+
+For a native Windows build, use a C++17-capable Visual Studio developer shell:
+
+```sh
+cmake -S . -B build-windows -A x64 -DS3G_DSP_DIR=../s3g-dsp -DS3G_RNBO_EXPORT_DIR=rnbo_exports/test_patch
+cmake --build build-windows --config Release --target s3g_rnbo_test_clap
+```
+
+Native Windows builds and Mac-to-Windows cross-builds use the same editor.
+The retained Cocoa editor is available for Mac regression comparisons with
+`-DS3G_ENABLE_PORTABLE_CLAP_GUI=OFF`; Windows with that option off is headless.
 
 ## Building an RNBO Export
 
@@ -91,7 +146,7 @@ including 0-input multichannel generators.
 
 By default, the CLAP bundle and plugin name come from the RNBO export folder.
 For example, `rnbo_exports/8ch_passthru` builds `s3g_8ch_passthru.clap` and
-appears in the host as `s3g 8ch passthru`.
+appears in the host as `s3g RNBO Passthru 8ch`.
 
 Install locally for REAPER:
 
@@ -144,7 +199,7 @@ strip and thin top line, normal-weight titles, muted gray labels/readouts, and
 compact square sliders, buttons, and popup-style selectors. New wrapper
 controls should reuse that vocabulary before adding local drawing exceptions.
 The host/plugin descriptor name intentionally remains REAPER-readable and is
-not all-caps; the Cocoa GUI title is formatted at draw time by the wrapper so
+not all-caps; the GUI title is formatted at draw time by the wrapper so
 the in-plugin title matches the `s3g-dsp` panel style. RNBO page names,
 parameter names, and enum labels are also uppercased only inside the custom GUI.
 The first panel begins at the shared 42 px content line, peak status is shown in
@@ -158,8 +213,9 @@ Before trusting a rebuilt wrapper visually, run:
 ```
 
 Stepped enum parameters are shown as popup-style selectors. Large parameter
-sets are split into pages, and the page buttons wrap into multiple rows when
-needed. The `RAND` button randomizes exposed RNBO parameters from the wrapper
+sets are split into pages of up to 24 controls, retaining the original grouping
+and four-column layout. Page buttons wrap into multiple rows when needed, and
+the base canvas height accounts for every tab row and parameter row. The `RAND` button randomizes exposed RNBO parameters from the wrapper
 side, and the adjacent `DEV` control sets how far the current parameter values
 move toward the random targets. Low `DEV` values create smaller deviations;
 high values create a wider spread for stress tests and exploratory patches.
@@ -171,11 +227,23 @@ objects. For example, MIDI channel 5 from the host reaches `notein 5` inside
 RNBO. Instrument builds also show a small MIDI activity indicator in the GUI
 top bar.
 
-The `LOAD` button opens a macOS file picker and loads the selected audio file
+The `LOAD` button opens the native platform file picker and loads the selected audio file
 into an RNBO external data reference named `src`. The GUI reports the loaded
 filename and channel count. CLAP state stores the selected source path for
 recall; if a session is restored, reload the file if the RNBO patch needs the
-buffer contents before playback.
+buffer contents before playback. State remains path-based; this migration does
+not silently change existing projects to embed audio.
+
+Use PCM WAV or AIFF for interchangeable Mac/Windows source files. Mac also
+retains AVFoundation-supported formats. Decode is bounded to 256 channels and
+512 MB of float samples; corrupt/non-finite files fail without replacing a valid
+loaded source. UTF-8 filenames are converted to native UTF-16 paths on Windows.
+The old patch-specific `WARN !=16ch` message is not applied to unrelated exports.
+
+GUI edits now emit balanced CLAP begin/value/end automation gestures, including
+RAND and double-click reset. Backpressure retains queued host notifications
+without replaying them over newer automation. RNBO uses its documented
+MultiProducer parameter interface; the fallback uses atomic control values.
 
 State reads and writes support hosts that transfer data in small chunks and
 reject oversized or non-finite state payloads before applying parameter values.
@@ -220,7 +288,7 @@ cmake --build build-clap-release
 ./scripts/stage-dist.sh build-clap-release
 ```
 
-The default versioned staged folder is:
+The existing Mac-only staging command remains available. Its default versioned staged folder is:
 
 ```text
 dist/s3g-rnbo-clap-macos-clap-0.1.0-pre/

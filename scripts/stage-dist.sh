@@ -145,7 +145,7 @@ Compatibility:
 
 - Apple silicon Macs only (arm64: M1, M2, M3, M4, or newer).
 - REAPER with CLAP support.
-- Wrapper conventions synchronized with s3g-dsp 0.6.0.
+- Default editor uses the shared s3g-dsp VSTGUI foundation.
 
 Recommended installation:
 

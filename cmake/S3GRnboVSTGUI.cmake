@@ -1,0 +1,85 @@
+include_guard(GLOBAL)
+
+function(s3g_rnbo_prepare_vstgui)
+  foreach(file plugins/common/s3g_vstgui_foundation.cpp
+      plugins/common/s3g_vstgui_canvas.h plugins/common/s3g_clap_vstgui.h
+      plugins/common/s3g_clap_gui_param_queue.h assets/fonts/FiraCode-Regular.ttf
+      assets/fonts/FiraCode-LICENSE.txt cmake/mingw/vstgui_compat.h)
+    if(NOT EXISTS "${S3G_DSP_DIR}/${file}")
+      message(FATAL_ERROR "VSTGUI requires the current s3g-dsp foundation. Set S3G_DSP_DIR; missing ${file}")
+    endif()
+  endforeach()
+  set(VSTGUI_STANDALONE OFF CACHE BOOL "" FORCE)
+  set(VSTGUI_STANDALONE_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(VSTGUI_TOOLS OFF CACHE BOOL "" FORCE)
+  set(VSTGUI_DISABLE_UNITTESTS ON CACHE BOOL "" FORCE)
+  set(VSTGUI_UISCRIPTING OFF CACHE BOOL "" FORCE)
+  set(VSTGUI_ENABLE_OPENGL_SUPPORT OFF CACHE BOOL "" FORCE)
+  set(VSTGUI_ENABLE_XMLPARSER OFF CACHE BOOL "" FORCE)
+  set(VSTGUI_ENABLE_DEPRECATED_METHODS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(vstgui
+    GIT_REPOSITORY "${S3G_VSTGUI_GIT_REPOSITORY}"
+    GIT_TAG "${S3G_VSTGUI_GIT_TAG}" GIT_SHALLOW FALSE)
+  FetchContent_MakeAvailable(vstgui)
+  set(vstgui_SOURCE_DIR "${vstgui_SOURCE_DIR}" PARENT_SCOPE)
+  set_target_properties(vstgui PROPERTIES POSITION_INDEPENDENT_CODE ON EXCLUDE_FROM_ALL TRUE)
+  if(TARGET vstgui_uidescription)
+    set_target_properties(vstgui_uidescription PROPERTIES EXCLUDE_FROM_ALL TRUE)
+  endif()
+  if(WIN32)
+    if(CMAKE_CROSSCOMPILING AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+      set_property(TARGET vstgui PROPERTY INTERFACE_LINK_LIBRARIES "")
+    endif()
+    target_compile_definitions(vstgui PUBLIC _WIN32_WINNT=0x0A00 WINVER=0x0A00 NOMINMAX)
+    target_link_libraries(vstgui PUBLIC d2d1 d3d11 dwrite dwmapi imm32 ole32 shell32 shlwapi uuid windowscodecs)
+    if(MINGW)
+      target_compile_options(vstgui PRIVATE -Wno-error
+        -include "${S3G_DSP_DIR}/cmake/mingw/vstgui_compat.h")
+      target_include_directories(vstgui PRIVATE "${S3G_DSP_DIR}/cmake/mingw")
+      target_compile_definitions(vstgui PRIVATE GetMatchingFonts=GetMatchingFonts_)
+    endif()
+  endif()
+endfunction()
+
+function(s3g_rnbo_enable_vstgui target)
+  target_sources(${target} PRIVATE "${S3G_DSP_DIR}/plugins/common/s3g_vstgui_foundation.cpp")
+  target_include_directories(${target} PRIVATE "${S3G_DSP_DIR}/plugins/common" "${vstgui_SOURCE_DIR}")
+  target_compile_definitions(${target} PRIVATE S3G_RNBO_VSTGUI=1
+    VSTGUI_ENABLE_DEPRECATED_METHODS=0 VSTGUI_ENABLE_XML_PARSER=0 VSTGUI_OPENGL_SUPPORT=0)
+  target_link_libraries(${target} PRIVATE vstgui)
+  set(font "${S3G_DSP_DIR}/assets/fonts/FiraCode-Regular.ttf")
+  set(font_license "${S3G_DSP_DIR}/assets/fonts/FiraCode-LICENSE.txt")
+  file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/resources/Licenses")
+  configure_file("${vstgui_SOURCE_DIR}/LICENSE" "${PROJECT_BINARY_DIR}/resources/Licenses/VSTGUI-LICENSE.txt" COPYONLY)
+  configure_file("${S3G_DSP_DIR}/LICENSE" "${PROJECT_BINARY_DIR}/resources/Licenses/s3g-dsp-LICENSE.txt" COPYONLY)
+  set(licenses "${PROJECT_BINARY_DIR}/resources/Licenses/VSTGUI-LICENSE.txt"
+    "${PROJECT_BINARY_DIR}/resources/Licenses/s3g-dsp-LICENSE.txt")
+  get_filename_component(clap_root "${S3G_CLAP_INCLUDE_DIR}" DIRECTORY)
+  if(EXISTS "${clap_root}/LICENSE")
+    configure_file("${clap_root}/LICENSE" "${PROJECT_BINARY_DIR}/resources/Licenses/CLAP-LICENSE.txt" COPYONLY)
+    list(APPEND licenses "${PROJECT_BINARY_DIR}/resources/Licenses/CLAP-LICENSE.txt")
+  endif()
+  if(S3G_HAS_RNBO_EXPORT)
+    foreach(relative LICENSE src/3rdparty/readerwriterqueue/LICENSE.md src/3rdparty/concurrentqueue/LICENSE.md)
+      if(EXISTS "${S3G_RNBO_EXPORT_DIR}/rnbo/${relative}")
+        string(REPLACE "/" "-" name "${relative}")
+        configure_file("${S3G_RNBO_EXPORT_DIR}/rnbo/${relative}"
+          "${PROJECT_BINARY_DIR}/resources/Licenses/RNBO-${name}.txt" COPYONLY)
+        list(APPEND licenses "${PROJECT_BINARY_DIR}/resources/Licenses/RNBO-${name}.txt")
+      endif()
+    endforeach()
+  endif()
+  if(APPLE)
+    set_source_files_properties("${font}" "${font_license}" PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/Fonts")
+    set_source_files_properties(${licenses} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/Licenses")
+    target_sources(${target} PRIVATE "${font}" "${font_license}" ${licenses})
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND /usr/bin/codesign --force --deep --sign - "$<TARGET_BUNDLE_DIR:${target}>" VERBATIM)
+  elseif(WIN32)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${target}>/Resources/Fonts" "$<TARGET_FILE_DIR:${target}>/Resources/Licenses"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${font}" "${font_license}" "$<TARGET_FILE_DIR:${target}>/Resources/Fonts"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${licenses} "$<TARGET_FILE_DIR:${target}>/Resources/Licenses"
+      VERBATIM)
+  endif()
+endfunction()

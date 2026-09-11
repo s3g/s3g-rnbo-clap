@@ -13,7 +13,22 @@ under BSD-3-Clause unless a file says otherwise.
 CLAP headers are MIT licensed. This project can fetch CLAP headers at configure
 time or use a local `S3G_CLAP_INCLUDE_DIR`.
 
-## RNBO
+## Shared GUI dependencies
+
+The VSTGUI backend directly compiles the BSD-3-Clause s3g-dsp GUI foundation,
+not its native DSP plug-ins. Its license is included in each built product.
+
+VSTGUI is BSD-style licensed. Its pinned source license is packaged as
+`Resources/Licenses/VSTGUI-LICENSE.txt` (inside Contents on Mac).
+Fira Code is licensed under the SIL Open Font License 1.1; the font and full
+license are packaged in `Resources/Fonts`. No system font installation is needed.
+
+Windows audio decoding uses dr_wav from pinned dr_libs. Its license is included
+as `Resources/Licenses/dr_libs-LICENSE.txt`.
+
+These dependencies do not change the licensing of generated RNBO exports.
+
+## RNBO export licensing
 
 RNBO engine support source included in an RNBO C++ export is licensed under the
 MIT License according to Cycling '74's RNBO Export Licensing FAQ.

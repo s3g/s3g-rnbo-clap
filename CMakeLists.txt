@@ -19,7 +19,11 @@ option(S3G_FETCH_CLAP "Fetch CLAP headers when S3G_CLAP_INCLUDE_DIR is empty" ON
 set(S3G_CLAP_INCLUDE_DIR "" CACHE PATH "Path containing clap/clap.h")
 set(S3G_CLAP_GIT_REPOSITORY "https://github.com/free-audio/clap.git" CACHE STRING "CLAP git repository")
 set(S3G_CLAP_GIT_TAG "1.2.6" CACHE STRING "CLAP git tag or commit")
-set(S3G_DSP_DIR "${CMAKE_CURRENT_LIST_DIR}/../s3g-dsp" CACHE PATH "Optional sibling s3g-dsp checkout used to audit shared GUI conventions")
+set(S3G_DSP_DIR "${CMAKE_CURRENT_LIST_DIR}/../s3g-dsp" CACHE PATH "s3g-dsp checkout providing the shared VSTGUI foundation")
+option(S3G_ENABLE_PORTABLE_CLAP_GUI "Use shared VSTGUI editors on macOS and Windows" ON)
+set(S3G_VSTGUI_GIT_REPOSITORY "https://github.com/steinbergmedia/vstgui.git" CACHE STRING "VSTGUI repository")
+set(S3G_VSTGUI_GIT_TAG "5db272256172557818b6158cf0bb2c4410bddb25" CACHE STRING "VSTGUI revision shared with s3g-dsp")
+set(S3G_DR_LIBS_GIT_TAG "dfe8377631000664666519fdb83da193fd8037f4" CACHE STRING "Pinned dr_libs revision")
 set(S3G_RNBO_EXPORT_DIR "" CACHE PATH "Optional RNBO C++ export folder containing rnbo_source.cpp or a Max RNBO *.rnbopat.cpp source plus rnbo/RNBO.cpp")
 set(S3G_RNBO_INPUT_CHANNELS "8" CACHE STRING "Fixed CLAP input channel count for the test wrapper")
 set(S3G_RNBO_OUTPUT_CHANNELS "8" CACHE STRING "Fixed CLAP output channel count for the test wrapper")
@@ -33,6 +37,17 @@ if(NOT S3G_RNBO_PLUGIN_KIND MATCHES "^(auto|effect|instrument)$")
   message(FATAL_ERROR "S3G_RNBO_PLUGIN_KIND must be auto, effect, or instrument")
 endif()
 
+foreach(channels S3G_RNBO_INPUT_CHANNELS S3G_RNBO_OUTPUT_CHANNELS)
+  if(NOT "${${channels}}" MATCHES "^[0-9]+$" OR ${channels} GREATER 256)
+    message(FATAL_ERROR "${channels} must be an integer from 0 to 256")
+  endif()
+endforeach()
+if(S3G_RNBO_OUTPUT_CHANNELS LESS 1)
+  message(FATAL_ERROR "S3G_RNBO_OUTPUT_CHANNELS must be at least 1")
+endif()
+if(S3G_RNBO_EXPORT_DIR)
+  get_filename_component(S3G_RNBO_EXPORT_DIR "${S3G_RNBO_EXPORT_DIR}" ABSOLUTE BASE_DIR "${PROJECT_SOURCE_DIR}")
+endif()
 set(S3G_RNBO_DERIVED_PLUGIN_SLUG "${S3G_RNBO_PLUGIN_SLUG}")
 if(NOT S3G_RNBO_DERIVED_PLUGIN_SLUG)
   if(S3G_RNBO_EXPORT_DIR)
@@ -40,6 +55,10 @@ if(NOT S3G_RNBO_DERIVED_PLUGIN_SLUG)
   else()
     set(S3G_RNBO_DERIVED_PLUGIN_SLUG "fallback")
   endif()
+endif()
+
+if(NOT S3G_RNBO_DERIVED_PLUGIN_SLUG MATCHES "^[A-Za-z0-9_][A-Za-z0-9_-]*$")
+  message(FATAL_ERROR "Plugin slug must contain only ASCII letters, digits, underscores or hyphens")
 endif()
 
 function(s3g_rnbo_title_from_slug output slug)
@@ -85,8 +104,8 @@ add_executable(s3g_rnbo_smoke tests/smoke.cpp)
 target_include_directories(s3g_rnbo_smoke PRIVATE src)
 
 add_custom_target(audit_gui_style
-  COMMAND "${CMAKE_COMMAND}" -E env "S3G_DSP_DIR=${S3G_DSP_DIR}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit-gui-style.sh"
+  COMMAND "${CMAKE_COMMAND}" "-DS3G_DSP_DIR=${S3G_DSP_DIR}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/AuditGui.cmake"
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
   COMMENT "Auditing s3g RNBO CLAP GUI style and host-name rules"
 )
@@ -95,8 +114,8 @@ if(BUILD_TESTING)
   add_test(NAME s3g_rnbo_smoke COMMAND s3g_rnbo_smoke)
   add_test(
     NAME s3g_rnbo_gui_style
-    COMMAND "${CMAKE_COMMAND}" -E env "S3G_DSP_DIR=${S3G_DSP_DIR}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit-gui-style.sh"
+    COMMAND "${CMAKE_COMMAND}" "-DS3G_DSP_DIR=${S3G_DSP_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/AuditGui.cmake"
   )
 endif()
 
@@ -117,6 +136,16 @@ if(S3G_BUILD_CLAP)
 
   if(NOT EXISTS "${S3G_CLAP_INCLUDE_DIR}/clap/clap.h")
     message(FATAL_ERROR "S3G_CLAP_INCLUDE_DIR must contain clap/clap.h: ${S3G_CLAP_INCLUDE_DIR}")
+  endif()
+
+  if(S3G_ENABLE_PORTABLE_CLAP_GUI AND (APPLE OR WIN32))
+    include(cmake/S3GRnboVSTGUI.cmake)
+    s3g_rnbo_prepare_vstgui()
+  endif()
+  if(WIN32)
+    FetchContent_Declare(dr_libs GIT_REPOSITORY https://github.com/mackron/dr_libs.git
+      GIT_TAG "${S3G_DR_LIBS_GIT_TAG}" GIT_SHALLOW FALSE)
+    FetchContent_MakeAvailable(dr_libs)
   endif()
 
   set(S3G_RNBO_SOURCES "")
@@ -148,8 +177,16 @@ if(S3G_BUILD_CLAP)
 
   add_library(s3g_rnbo_test_clap MODULE
     src/s3g_rnbo_test_clap.cpp
+    src/s3g_rnbo_audio_file.cpp
     ${S3G_RNBO_SOURCES}
   )
+
+  set(rnbo_source_hash "fallback")
+  if(S3G_HAS_RNBO_EXPORT)
+    file(SHA256 "${S3G_RNBO_PATCH_SOURCE}" rnbo_source_hash)
+  endif()
+  file(GENERATE OUTPUT "${PROJECT_BINARY_DIR}/rnbo-build-identity.txt" CONTENT
+    "id=${S3G_RNBO_EFFECTIVE_PLUGIN_ID}\nname=${S3G_RNBO_DERIVED_PLUGIN_NAME}\nslug=${S3G_RNBO_DERIVED_PLUGIN_SLUG}\nversion=${PROJECT_VERSION}\nkind=${S3G_RNBO_PLUGIN_KIND}\ninputs=${S3G_RNBO_INPUT_CHANNELS}\noutputs=${S3G_RNBO_OUTPUT_CHANNELS}\nexport_sha256=${rnbo_source_hash}\nvstgui=${S3G_VSTGUI_GIT_TAG}\n")
 
   target_include_directories(s3g_rnbo_test_clap PRIVATE
     ${S3G_CLAP_INCLUDE_DIR}
@@ -174,7 +211,7 @@ if(S3G_BUILD_CLAP)
   )
 
   if(APPLE)
-    set_source_files_properties(src/s3g_rnbo_test_clap.cpp PROPERTIES LANGUAGE OBJCXX)
+    set_source_files_properties(src/s3g_rnbo_test_clap.cpp src/s3g_rnbo_audio_file.cpp PROPERTIES LANGUAGE OBJCXX)
     target_link_libraries(s3g_rnbo_test_clap PRIVATE "-framework Cocoa" "-framework AVFoundation")
   endif()
 
@@ -194,6 +231,22 @@ if(S3G_BUILD_CLAP)
     )
   endif()
 
+  if(S3G_ENABLE_PORTABLE_CLAP_GUI AND (APPLE OR WIN32))
+    s3g_rnbo_enable_vstgui(s3g_rnbo_test_clap)
+  endif()
+  if(WIN32)
+    set_target_properties(s3g_rnbo_test_clap PROPERTIES SUFFIX ".clap")
+    target_compile_definitions(s3g_rnbo_test_clap PRIVATE NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
+    target_include_directories(s3g_rnbo_test_clap SYSTEM PRIVATE "${dr_libs_SOURCE_DIR}")
+    target_link_libraries(s3g_rnbo_test_clap PRIVATE winmm)
+    configure_file("${dr_libs_SOURCE_DIR}/LICENSE" "${PROJECT_BINARY_DIR}/resources/Licenses/dr_libs-LICENSE.txt" COPYONLY)
+    add_custom_command(TARGET s3g_rnbo_test_clap POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:s3g_rnbo_test_clap>/Resources/Licenses"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PROJECT_BINARY_DIR}/resources/Licenses/dr_libs-LICENSE.txt"
+        "$<TARGET_FILE_DIR:s3g_rnbo_test_clap>/Resources/Licenses"
+      VERBATIM)
+  endif()
+
   if(BUILD_TESTING AND UNIX)
     add_executable(s3g_rnbo_clap_state_smoke tests/clap_state.cpp)
     target_include_directories(s3g_rnbo_clap_state_smoke PRIVATE
@@ -204,5 +257,29 @@ if(S3G_BUILD_CLAP)
       NAME s3g_rnbo_clap_state
       COMMAND s3g_rnbo_clap_state_smoke $<TARGET_FILE:s3g_rnbo_test_clap>
     )
+  endif()
+  if(BUILD_TESTING AND S3G_ENABLE_PORTABLE_CLAP_GUI AND (APPLE OR WIN32))
+    add_executable(s3g_rnbo_audio_file_smoke tests/audio_file.cpp src/s3g_rnbo_audio_file.cpp)
+    if(APPLE)
+      target_link_libraries(s3g_rnbo_audio_file_smoke PRIVATE "-framework Cocoa" "-framework AVFoundation")
+    else()
+      target_include_directories(s3g_rnbo_audio_file_smoke SYSTEM PRIVATE "${dr_libs_SOURCE_DIR}")
+    endif()
+    add_test(NAME s3g_rnbo_audio_file COMMAND s3g_rnbo_audio_file_smoke)
+    add_executable(s3g_rnbo_gui_smoke tests/gui.cpp src/s3g_rnbo_audio_file.cpp ${S3G_RNBO_SOURCES})
+    get_target_property(rnbo_definitions s3g_rnbo_test_clap COMPILE_DEFINITIONS)
+    get_target_property(rnbo_includes s3g_rnbo_test_clap INCLUDE_DIRECTORIES)
+    target_compile_definitions(s3g_rnbo_gui_smoke PRIVATE ${rnbo_definitions})
+    target_include_directories(s3g_rnbo_gui_smoke PRIVATE ${rnbo_includes})
+    if(APPLE)
+      set_source_files_properties(tests/gui.cpp PROPERTIES LANGUAGE OBJCXX)
+      set_target_properties(s3g_rnbo_gui_smoke PROPERTIES MACOSX_BUNDLE TRUE)
+      target_link_libraries(s3g_rnbo_gui_smoke PRIVATE "-framework Cocoa" "-framework AVFoundation")
+    elseif(WIN32)
+      target_link_libraries(s3g_rnbo_gui_smoke PRIVATE winmm)
+    endif()
+    s3g_rnbo_enable_vstgui(s3g_rnbo_gui_smoke)
+    add_test(NAME s3g_rnbo_gui COMMAND s3g_rnbo_gui_smoke)
+    set_tests_properties(s3g_rnbo_gui PROPERTIES LABELS "gui" TIMEOUT 180)
   endif()
 endif()

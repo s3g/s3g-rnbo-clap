@@ -1,4 +1,10 @@
 #include "s3g_rnbo_fallback.h"
+#include "s3g_rnbo_audio_file.h"
+#if defined(S3G_RNBO_VSTGUI)
+#include "s3g_clap_vstgui.h"
+#include "s3g_clap_gui_param_queue.h"
+#include "s3g_vstgui_canvas.h"
+#endif
 
 #include <clap/clap.h>
 #include <clap/ext/audio-ports.h>
@@ -7,16 +13,20 @@
 #include <clap/ext/params.h>
 #include <clap/ext/state.h>
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(S3G_RNBO_VSTGUI)
 #import <Cocoa/Cocoa.h>
 #import <AVFoundation/AVFoundation.h>
 #endif
 
 #if S3G_HAS_RNBO_EXPORT
 #include "RNBO.h"
+#if defined(S3G_RNBO_VSTGUI) && defined(RNBO_SIMPLEENGINE)
+#error "The VSTGUI wrapper requires RNBO's default thread-safe MultiProducer engine"
+#endif
 #endif
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -110,6 +120,7 @@ struct RnboProcessor {
     float gainSmooth = 2.0f / 3.0f;
     float mixSmooth = 1.0f;
     float outSmooth = 1.0f;
+    std::atomic<bool> startupGuardRequested { false };
     uint32_t startupSilenceFrames = 1;
     uint32_t startupSilenceRemaining = 0;
     uint32_t startupRampFrames = 1;
@@ -265,7 +276,7 @@ struct RnboProcessor {
         const size_t slash = path.find_last_of("/\\");
         const std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
         sourceStatus = name + "  " + std::to_string(channels) + "ch";
-        armStartupGuard();
+        startupGuardRequested.store(true, std::memory_order_release);
         return true;
     }
 #endif
@@ -329,6 +340,14 @@ struct Plugin {
     clap_plugin_t plugin {};
     const clap_host_t* host = nullptr;
     Params params {};
+#if defined(S3G_RNBO_VSTGUI)
+    std::array<std::atomic<float>, 3> fallbackValues {{2.f / 3.f, 1.f, 1.f}};
+    s3g::portable_gui::foundation::EditorHost* portableGuiEditor = nullptr;
+    uint32_t portableGuiWidth = 980, portableGuiHeight = 320, nativeGuiHeight = 320;
+    bool portableGuiVisible = false;
+    const clap_host_params_t* hostParams = nullptr;
+    s3g::clap_gui::ParamEventQueue<65536> guiParamEvents;
+#endif
     RnboProcessor processor {};
 #if S3G_HAS_RNBO_EXPORT
     std::vector<RnboParam> rnboParams;
@@ -337,7 +356,7 @@ struct Plugin {
     std::atomic<float> midiActivity { 0.0f };
     std::atomic<float> randomAmount { 1.0f };
     uint32_t randomSeed = 0x63a85f2bu;
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(S3G_RNBO_VSTGUI)
     void* guiView = nullptr;
 #endif
 };
@@ -427,21 +446,26 @@ float clampParam(clap_id id, double value)
 
 void setParam(Plugin& p, clap_id id, double value)
 {
+    if (!std::isfinite(value)) return;
 #if S3G_HAS_RNBO_EXPORT
     if (auto* param = findRnboParam(p, id)) {
         const double constrained = std::clamp(value, param->min, param->max);
         p.processor.rnbo.setParameterValue(param->index, constrained);
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(S3G_RNBO_VSTGUI)
         if (p.guiView) [static_cast<NSView*>(p.guiView) setNeedsDisplay:YES];
 #endif
     }
 #else
     const float v = clampParam(id, value);
+#if defined(S3G_RNBO_VSTGUI)
+    if (id >= kGain && id <= kOutput) p.fallbackValues[id - kGain].store(v);
+#else
     if (id == kGain) p.params.gain = v;
     else if (id == kMix) p.params.mix = v;
     else if (id == kOutput) p.params.output = v;
     else return;
-#if defined(__APPLE__)
+#endif
+#if defined(__APPLE__) && !defined(S3G_RNBO_VSTGUI)
     if (p.guiView) [static_cast<NSView*>(p.guiView) setNeedsDisplay:YES];
 #endif
 #endif
@@ -455,10 +479,14 @@ double getParam(Plugin& p, clap_id id)
     }
     return 0.0;
 #else
+#if defined(S3G_RNBO_VSTGUI)
+    return id >= kGain && id <= kOutput ? p.fallbackValues[id - kGain].load() : 0.;
+#else
     if (id == kGain) return p.params.gain;
     if (id == kMix) return p.params.mix;
     if (id == kOutput) return p.params.output;
     return 0.0;
+#endif
 #endif
 }
 
@@ -472,7 +500,8 @@ double random01(Plugin& p)
     return static_cast<double>(p.randomSeed & 0x00ffffffu) / static_cast<double>(0x01000000u);
 }
 
-void randomizeParams(Plugin& p)
+template <class Apply>
+void randomizeParamsWith(Plugin& p, Apply&& apply)
 {
     const double amount = std::clamp(static_cast<double>(p.randomAmount.load(std::memory_order_relaxed)), 0.0, 1.0);
 #if S3G_HAS_RNBO_EXPORT
@@ -495,13 +524,18 @@ void randomizeParams(Plugin& p)
             target = param.min + random01(p) * (param.max - param.min);
             value = current + (target - current) * amount;
         }
-        setParam(p, param.id, value);
+        apply(param.id, value);
     }
 #else
-    setParam(p, kGain, p.params.gain + (random01(p) - p.params.gain) * amount);
-    setParam(p, kMix, p.params.mix + (random01(p) - p.params.mix) * amount);
-    setParam(p, kOutput, p.params.output + (random01(p) - p.params.output) * amount);
+    apply(kGain, getParam(p, kGain) + (random01(p) - getParam(p, kGain)) * amount);
+    apply(kMix, getParam(p, kMix) + (random01(p) - getParam(p, kMix)) * amount);
+    apply(kOutput, getParam(p, kOutput) + (random01(p) - getParam(p, kOutput)) * amount);
 #endif
+}
+
+void randomizeParams(Plugin& p)
+{
+    randomizeParamsWith(p, [&](clap_id id, double value) { setParam(p, id, value); });
 }
 
 #if S3G_HAS_RNBO_EXPORT
@@ -546,11 +580,31 @@ void readEvents(Plugin& p, const clap_input_events_t* in)
     }
 }
 
-bool init(const clap_plugin_t*) { return true; }
+bool init(const clap_plugin_t* plugin)
+{
+#if defined(S3G_RNBO_VSTGUI)
+    auto* p = self(plugin);
+    if (p->host && p->host->get_extension)
+        p->hostParams = static_cast<const clap_host_params_t*>(p->host->get_extension(p->host, CLAP_EXT_PARAMS));
+#endif
+    return true;
+}
+#if defined(S3G_RNBO_VSTGUI)
+void portableGuiDestroy(const clap_plugin_t*);
+void serviceGuiEvents(Plugin& p, const clap_output_events_t* out)
+{
+    // GUI values are already applied through RNBO's MultiProducer interface
+    // or fallback atomics. Host backpressure must not replay stale values.
+    s3g::clap_gui::serviceParamEvents(p.guiParamEvents, out, [](clap_id, double) {});
+}
+#endif
 
 void destroy(const clap_plugin_t* plugin)
 {
-#if defined(__APPLE__)
+#if defined(S3G_RNBO_VSTGUI)
+    portableGuiDestroy(plugin);
+#endif
+#if defined(__APPLE__) && !defined(S3G_RNBO_VSTGUI)
     auto* p = self(plugin);
     if (p->guiView) {
         NSView* view = static_cast<NSView*>(p->guiView);
@@ -581,6 +635,11 @@ clap_process_status process(const clap_plugin_t* plugin, const clap_process_t* p
     p->processor.midiInput.clear();
     p->processor.midiOutput.clear();
 #endif
+    if (p->processor.startupGuardRequested.exchange(false, std::memory_order_acq_rel))
+        p->processor.armStartupGuard();
+#if defined(S3G_RNBO_VSTGUI)
+    serviceGuiEvents(*p, proc->out_events);
+#endif
     readEvents(*p, proc->in_events);
     if (proc->audio_outputs_count == 0) return CLAP_PROCESS_CONTINUE;
     const clap_audio_buffer_t emptyInput {};
@@ -589,8 +648,12 @@ clap_process_status process(const clap_plugin_t* plugin, const clap_process_t* p
 #if S3G_HAS_RNBO_EXPORT
     p->processor.processRnbo(input, output, proc->frames_count);
 #else
+    Params current;
+    current.gain = getParam(*p, kGain);
+    current.mix = getParam(*p, kMix);
+    current.output = getParam(*p, kOutput);
     for (uint32_t i = 0; i < proc->frames_count; ++i) {
-        p->processor.processFallback(input, output, i, p->params);
+        p->processor.processFallback(input, output, i, current);
     }
 #endif
     p->processor.applyStartupRamp(output, proc->frames_count);
@@ -686,6 +749,7 @@ bool paramsGetInfo(const clap_plugin_t* plugin, uint32_t index, clap_param_info_
     auto* p = self(plugin);
     if (!info || index >= p->rnboParams.size()) return false;
     const auto& param = p->rnboParams[index];
+    *info = {};
     info->id = param.id;
     info->flags = CLAP_PARAM_IS_AUTOMATABLE;
     info->min_value = param.min;
@@ -754,8 +818,11 @@ bool paramsTextToValue(const clap_plugin_t* plugin, clap_id id, const char* disp
     return true;
 }
 
-void paramsFlush(const clap_plugin_t* plugin, const clap_input_events_t* in, const clap_output_events_t*)
+void paramsFlush(const clap_plugin_t* plugin, const clap_input_events_t* in, const clap_output_events_t* out)
 {
+#if defined(S3G_RNBO_VSTGUI)
+    serviceGuiEvents(*self(plugin), out);
+#endif
     readEvents(*self(plugin), in);
 }
 
@@ -805,7 +872,8 @@ bool stateSave(const clap_plugin_t* plugin, const clap_ostream_t* stream)
     return true;
 #else
     SavedState state {};
-    state.params = self(plugin)->params;
+    auto& p = *self(plugin);
+    state.params = {float(getParam(p, kGain)), float(getParam(p, kMix)), float(getParam(p, kOutput))};
     return stream && stream->write && writeFull(stream, &state, sizeof(state));
 #endif
 }
@@ -846,7 +914,7 @@ bool stateLoad(const clap_plugin_t* plugin, const clap_istream_t* stream)
     } else {
         p->processor.sourceStatus = "NO FILE";
     }
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(S3G_RNBO_VSTGUI)
     if (p->guiView) [static_cast<NSView*>(p->guiView) setNeedsDisplay:YES];
 #endif
     return true;
@@ -870,7 +938,7 @@ const clap_plugin_state_t stateExt { stateSave, stateLoad };
 
 } // namespace
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(S3G_RNBO_VSTGUI)
 
 NSColor* uiColor(int rgb, double alpha = 1.0)
 {
@@ -1744,13 +1812,22 @@ bool guiHide(const clap_plugin_t* plugin) { auto* p = self(plugin); if (!p->guiV
 const clap_plugin_gui_t guiExt { guiIsApiSupported, guiGetPreferredApi, guiCreate, guiDestroy, guiSetScale, guiGetSize, guiCanResize, guiGetResizeHints, guiAdjustSize, guiSetSize, guiSetParent, guiSetTransient, guiSuggestTitle, guiShow, guiHide };
 #endif
 
+#if defined(S3G_RNBO_VSTGUI)
+namespace {
+#include "s3g_rnbo_vstgui.inc"
+}
+#endif
+
 const void* getExtension(const clap_plugin_t*, const char* id)
 {
     if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0) return &audioPorts;
     if (std::strcmp(id, CLAP_EXT_NOTE_PORTS) == 0) return &notePorts;
     if (std::strcmp(id, CLAP_EXT_PARAMS) == 0) return &paramsExt;
     if (std::strcmp(id, CLAP_EXT_STATE) == 0) return &stateExt;
-#if defined(__APPLE__)
+#if defined(S3G_RNBO_VSTGUI)
+    if (std::strcmp(id, CLAP_EXT_GUI) == 0) return &portableGui;
+#endif
+#if defined(__APPLE__) && !defined(S3G_RNBO_VSTGUI)
     if (std::strcmp(id, CLAP_EXT_GUI) == 0) return &guiExt;
 #endif
     return nullptr;
@@ -1789,6 +1866,9 @@ const clap_plugin_t* createPlugin(const clap_plugin_factory*, const clap_host_t*
 #if S3G_HAS_RNBO_EXPORT
     discoverRnboParams(*p);
 #endif
+#if defined(S3G_RNBO_VSTGUI)
+    p->nativeGuiHeight = p->portableGuiHeight = preferredGuiHeight(p);
+#endif
     p->plugin.desc = &descriptor;
     p->plugin.plugin_data = p;
     p->plugin.init = init;
@@ -1811,4 +1891,4 @@ bool entryInit(const char*) { return true; }
 void entryDeinit() {}
 const void* entryGetFactory(const char* factoryId) { return std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) == 0 ? &factory : nullptr; }
 
-extern "C" const clap_plugin_entry_t clap_entry { CLAP_VERSION_INIT, entryInit, entryDeinit, entryGetFactory };
+extern "C" CLAP_EXPORT const clap_plugin_entry_t clap_entry { CLAP_VERSION_INIT, entryInit, entryDeinit, entryGetFactory };

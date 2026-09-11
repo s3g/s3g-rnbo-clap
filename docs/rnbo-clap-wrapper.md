@@ -1,54 +1,81 @@
-# RNBO CLAP Wrapper Notes
+# RNBO CLAP VSTGUI adaptation
 
-The first wrapper is intentionally small:
+The wrapper builds an RNBO C++ export into CLAP, not into a Max external.
+The same export and fixed channel layout feed independent Mac and Windows
+build trees. Generated exports remain ignored and keep their original licenses.
 
-- fixed input/output channel count selected at CMake configure time
-- fallback DSP when no RNBO export is present
-- `RNBO::CoreObject` processing when an export folder is supplied
-- reflected RNBO parameters plus wrapper utility controls
-- custom Cocoa GUI following the current grayscale `s3g-dsp` family direction
+## Shared foundation
 
-The wrapper now reflects visible RNBO parameters, forwards host MIDI to RNBO,
-groups large parameter sets into GUI pages, and provides randomization/deviation
-controls for fast stress testing.
+The current `s3g-dsp/plugins/common/s3g_vstgui_foundation.{h,cpp}`,
+`s3g_vstgui_canvas.h`, `s3g_clap_vstgui.h` and parameter event queue are used
+directly through `S3G_DSP_DIR`. No native s3g-dsp DSP targets are built.
 
-## GUI Style Inheritance
+- Fira Code (10 body / 10.5 regular title), bundled with its OFL license.
+- Shared grayscale palette, outline-free controls, custom popup menus and
+  centered button text; no operating-system popup styling.
+- Engine panel at y 42, header inset 8, control inset 16.
+- Proportional 65–200% resizing and shared macOS/Windows resource paths.
+- CLAP host names and IDs unchanged; only `guiPluginTitle()` and UI labels
+  apply uppercase presentation after lowercase `s3g`.
+- PK remains dBFS; MIDI activity and file/IO/page/group status remain present.
+- Hidden editors stop refresh; continuous controls reset on double-click.
 
-RNBO wrapper GUI edits should track the corrected `s3g-dsp` CLAP style guide in
-`s3g-dsp/docs/gui-style-guide.md`. The current local contract tracks
-`s3g-dsp` 0.6.0.
+## Adaptation, not redesign
 
-- Use flat gray/black toolbox panels on a near-black background.
-- Keep titles normal weight; the dark header strip and thin top line provide
-  the hierarchy.
-- Use muted shared grays for labels, values, titles, borders, sliders, buttons,
-  and selector menus. Avoid plugin-local bright white text.
-- Keep label/control rows aligned and compact, with discrete RNBO enum params
-  shown as menus rather than sliders.
-- Begin the engine panel at y 42, place its title at x + 8, and place ordinary
-  controls at x + 16.
-- Fit panel heights to visible controls and avoid carrying dead interior space
-  from one RNBO export to another.
-- Keep `PK`, MIDI activity, source status, IO, page, and group information as
-  compact status readouts rather than primary editable controls.
-- Format `PK` in dBFS, pause timer repainting for inactive/hidden editors, and
-  reset continuous controls to their declared defaults on double-click.
-- Preserve the name/display split used by `s3g-dsp`: CLAP descriptors and
-  macOS bundle names stay readable in REAPER, for example
-  `s3g RNBO Modal Stress 24ch`, while the custom Cocoa GUI title is formatted
-  at draw time as `s3g RNBO MODAL STRESS 24CH`.
-- Do not fix GUI title casing by uppercasing `S3G_RNBO_PLUGIN_NAME`,
-  `CFBundleName`, or the CMake-generated host name. The source of truth is
-  `guiPluginTitle()` in `src/s3g_rnbo_test_clap.cpp`.
-- RNBO-derived page, parameter, and enum labels are uppercased only inside the
-  custom GUI. Parameter names exposed to the host/RNBO remain unchanged.
+The original Cocoa editor stays in `src/s3g_rnbo_test_clap.cpp`, selectable
+with `S3G_ENABLE_PORTABLE_CLAP_GUI=OFF` on Mac. The portable editor lives in
+`src/s3g_rnbo_vstgui.inc`. Its channel-prefix/slash-path grouping and ordering
+come from Cocoa, as do four columns, compact sliders, tabs, enums, RAND and DEV.
 
-Run `./scripts/audit-gui-style.sh` after GUI or naming edits. It catches the
-most likely drift: old bright colors, bold fonts, missing GUI title formatting,
-panel/content geometry, hand-formatted peak values, missing double-click or
-redraw guards, unsafe partial state-stream loops, and host metadata casing. If
-the sibling `s3g-dsp` checkout is present, it also confirms that the upstream
-style guide still carries the contracts implemented here.
+Large groups are now actually split at 24 parameters, and base height includes
+all wrapped tabs and control rows. Previously groups could exceed the fixed
+520-pixel viewport despite the intended paging contract. Top-bar MIDI and peak
+readouts no longer overlap. Generic imports no longer show a patch-specific
+16-channel warning.
 
-Future passes can add hidden/internal parameter metadata, file dependency
-loading, and multichannel layout helpers.
+The startup guard, soft limiter, RNBO parameter IDs and v1 state serialization
+remain intact. State still recalls a source path with a RELOAD status, not
+embedded samples. Main-thread file import uses RNBO's thread-safe external-data
+API and retains buffers until its release callback; the startup guard request
+is handed to audio atomically. Windows decodes PCM WAV/AIFF through pinned
+dr_wav, with wide-path handling. Mac retains AVFoundation decoding.
+
+## Automation and tests
+
+The shared bounded queue delivers balanced begin/value/end events to CLAP
+process/flush. GUI changes are already applied through RNBO's MultiProducer
+interface or fallback atomics, so delayed host notifications never replay a
+stale value. Dragging reserves an end-event slot; RAND checks queue capacity
+before applying any changes.
+
+Run `ctest --test-dir <native-build> --output-on-failure`. Tests include state
+stream chunking/failure handling, GUI style, native canvas rendering, all
+reflected pages, defaults, enums, RAND, queue saturation and concurrent audio
+editing. Audio-file tests cover channel order, Unicode paths and failed-load
+preservation. Set `S3G_RNBO_CAPTURE_DIR` to keep canvas references.
+
+The dual-build command packages only after both outputs succeed and their
+metadata/export identities match. It never installs or overwrites a previous
+distribution. Copy the Windows CLAP and adjacent Resources folder together.
+Windows runtime GUI, file dialogs and device-specific DPI behavior still need
+testing in Windows REAPER.
+
+## Verification on 2026-09-11
+
+Native macOS tests passed for the fallback wrapper, the local 24-channel
+DroneSynth export and the local 16-channel Ambigrain export (five tests each).
+The GUI test covers native window attachment/reopening and 65–200% bounds,
+plus all exposed controls. Ambigrain also exercises Unicode-path sample import,
+failed-load preservation and replacement while processing. These generated
+exports remain outside version control; the tests run against whichever export
+is configured in CMake.
+
+Mac and Windows x64 DroneSynth CLAPs were built together with matching build
+identities. Windows execution is not validated by these Mac tests. The retained
+Cocoa backend can still be built separately for regression comparisons.
+
+API references:
+
+- [RNBO CoreObject and thread-safe external data](https://rnbo.cycling74.com/cpp/ref/classes/core_object)
+- [Using an RNBO C++ export](https://rnbo.cycling74.com/learn/how-to-include-rnbo-in-your-c-project)
+- [VSTGUI](https://github.com/steinbergmedia/vstgui)
