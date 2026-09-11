@@ -138,6 +138,15 @@ struct RnboProcessor {
     std::string sourceStatus = "NO FILE";
 #endif
 
+    bool supportsSourceLoading() const
+    {
+#if S3G_HAS_RNBO_EXPORT
+        return hasExternalDataRef("src");
+#else
+        return false;
+#endif
+    }
+
     void prepare(double sr, uint32_t blockSize)
     {
         sampleRate = std::max(1.0, sr);
@@ -1440,6 +1449,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
 {
 #if S3G_HAS_RNBO_EXPORT
     auto* p = static_cast<Plugin*>(_plugin);
+    if (!p->processor.supportsSourceLoading()) return;
     NSOpenPanel* panel = [NSOpenPanel openPanel];
     [panel setAllowsMultipleSelection:NO];
     [panel setCanChooseDirectories:NO];
@@ -1520,7 +1530,8 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSDictionary* title = @{ NSFontAttributeName:titleFont, NSForegroundColorAttributeName:uiColor(kGuiTitle) };
     [guiPluginTitle() drawAtPoint:NSMakePoint(18, 14) withAttributes:title];
 #if S3G_HAS_RNBO_EXPORT
-    [self drawButton:@"LOAD" frame:[self loadButtonRect] attrs:text];
+    if (p->processor.supportsSourceLoading())
+        [self drawButton:@"LOAD" frame:[self loadButtonRect] attrs:text];
 #endif
     [self drawButton:@"RAND" frame:[self randomButtonRect] attrs:text];
     [self drawRandomAmountWithAttrs:text dim:dim];
@@ -1591,8 +1602,10 @@ uint32_t preferredGuiHeight(const Plugin* p)
     [mode drawAtPoint:NSMakePoint(kGuiStartX, metaY) withAttributes:dim];
     [[NSString stringWithFormat:@"IO %u IN / %u OUT", kInputChannels, kOutputChannels] drawAtPoint:NSMakePoint(kGuiWidth - 210, metaY) withAttributes:dim];
     [[NSString stringWithFormat:@"PARAMS %zu  PAGE %zu/%zu  GROUP %s", p->rnboParams.size(), _page + 1, totalPages, pages[_page].label.c_str()] drawAtPoint:NSMakePoint(kGuiStartX, metaY + 18) withAttributes:dim];
-    NSString* source = [NSString stringWithUTF8String:p->processor.sourceStatus.c_str()];
-    [[NSString stringWithFormat:@"SRC %@", source] drawAtPoint:NSMakePoint(kGuiStartX, metaY + 36) withAttributes:dim];
+    if (p->processor.supportsSourceLoading()) {
+        NSString* source = [NSString stringWithUTF8String:p->processor.sourceStatus.c_str()];
+        [[NSString stringWithFormat:@"SRC %@", source] drawAtPoint:NSMakePoint(kGuiStartX, metaY + 36) withAttributes:dim];
+    }
     [self drawOpenEnumMenuWithAttrs:text dim:dim];
 #else
     [mode drawAtPoint:NSMakePoint(kGuiStartX, 214) withAttributes:dim];
@@ -1634,7 +1647,7 @@ uint32_t preferredGuiHeight(const Plugin* p)
     NSPoint pt = [self convertPoint:event.locationInWindow fromView:nil];
     auto* p = static_cast<Plugin*>(_plugin);
 #if S3G_HAS_RNBO_EXPORT
-    if (NSPointInRect(pt, [self loadButtonRect])) {
+    if (p->processor.supportsSourceLoading() && NSPointInRect(pt, [self loadButtonRect])) {
         _drag = -1;
         _openEnum = -1;
         _hoverEnumItem = -1;

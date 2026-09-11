@@ -18,6 +18,10 @@ directly through `S3G_DSP_DIR`. No native s3g-dsp DSP targets are built.
 - CLAP host names and IDs unchanged; only `guiPluginTitle()` and UI labels
   apply uppercase presentation after lowercase `s3g`.
 - PK remains dBFS; MIDI activity and file/IO/page/group status remain present.
+- LOAD, file-drop import and the SRC readout are available only when the export
+  exposes the loader's named `src` data reference. Other internal data references
+  (for example an FFT window) do not enable sample import. Both editor backends
+  follow this rule.
 - Hidden editors stop refresh; continuous controls reset on double-click.
 
 ## Adaptation, not redesign

@@ -145,8 +145,7 @@ uint32_t nativeHeight(const Plugin* p)
 #if S3G_HAS_RNBO_EXPORT
 bool loadSource(Plugin& p, const std::string& path)
 {
-    if (!p.processor.hasExternalDataRef("src")) {
-        p.processor.sourceStatus = "NO RNBO src";
+    if (!p.processor.supportsSourceLoading()) {
         return false;
     }
     s3g::rnbo_lab::DecodedAudio audio;
@@ -274,7 +273,7 @@ public:
     bool dropped(const std::vector<std::string>& paths, CPoint) override
     {
 #if S3G_HAS_RNBO_EXPORT
-        if (paths.empty())
+        if (paths.empty() || !p.processor.supportsSourceLoading())
             return false;
         endEdit();
         const bool ok = loadSource(p, paths.front());
@@ -289,6 +288,8 @@ public:
     void loadDialog()
     {
 #if S3G_HAS_RNBO_EXPORT
+        if (!p.processor.supportsSourceLoading())
+            return;
         endEdit();
         F::FileDialogOptions options;
         options.title = "Load RNBO src audio";
@@ -303,7 +304,8 @@ public:
     {
         text(guiPluginTitle(), F::rect(18., 13., 600., 16.), style.text, kLeftText, titleFont);
 #if S3G_HAS_RNBO_EXPORT
-        button(F::rect(640., 13., 62., 15.), "LOAD", [this] { loadDialog(); });
+        if (p.processor.supportsSourceLoading())
+            button(F::rect(640., 13., 62., 15.), "LOAD", [this] { loadDialog(); });
 #endif
         button(F::rect(708., 13., 62., 15.), "RAND", [this] { randomize(); });
         const auto deviation = F::rect(778., 13., 82., 15.);
@@ -373,8 +375,9 @@ public:
         text(C::upper(C::format("PARAMS %zu  PAGE %zu/%zu  GROUP %s", p.rnboParams.size(), page + 1,
                  pages.size(), current.label.c_str())),
             F::rect(startX, meta + 18., panelWidth - 32., 15.), style.value);
-        text("SRC " + p.processor.sourceStatus, F::rect(startX, meta + 36., panelWidth - 32., 15.),
-            style.value);
+        if (p.processor.supportsSourceLoading())
+            text("SRC " + p.processor.sourceStatus,
+                F::rect(startX, meta + 36., panelWidth - 32., 15.), style.value);
 #else
         panel(F::rect(panelX, contentTop, panelWidth, 210.), "ENGINE");
         slider(kGain, "GAIN", F::rect(startX, 92., 450., 26.), 0., 1., Params {}.gain, false);

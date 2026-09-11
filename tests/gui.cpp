@@ -200,6 +200,20 @@ void run(rnbo_gui::Editor& editor, Plugin& p)
     Output output;
     sourceImport(p);
     render(editor, "first-open");
+#if S3G_HAS_RNBO_EXPORT
+    if (!p.processor.supportsSourceLoading()) {
+        const auto previousStatus = p.processor.sourceStatus;
+        editor.loadDialog(); // Must return without opening a native file dialog.
+        expect(!editor.dropped({ "/missing-rnbo-audio.wav" }, { 30., 30. }),
+            "exports without src reject file drops");
+        click(editor, 668., 20.); // No LOAD hit target.
+        expect(p.processor.sourceStatus == previousStatus,
+            "unavailable source loading leaves status unchanged");
+        expect(!rnbo_gui::loadSource(p, "/missing-rnbo-audio.wav")
+                && p.processor.sourceStatus == previousStatus,
+            "unsupported direct loads are no-ops");
+    }
+#endif
     expect(rnbo_gui::guiPluginTitle().rfind("s3g RNBO", 0) == 0, "GUI-only title casing");
     expect(s3g::portable_gui::foundation::usingBundledFont(),
         "Fira Code loaded from bundled resources");
