@@ -251,25 +251,29 @@ void run(rnbo_gui::Editor& editor, Plugin& p)
 #endif
     editor.randomize();
     paramsFlush(&p.plugin, nullptr, &output.events);
-    expect(output.count > 0 && output.complete(), "balanced automation for edits and RAND");
+    const bool hasParameters = paramsCount(&p.plugin) > 0;
+    expect((!hasParameters || output.count > 0) && output.complete(),
+        "balanced automation for edits and RAND");
     clap_param_info_t info {};
-    paramsGetInfo(&p.plugin, 0, &info);
-    const auto original = getParam(p, info.id);
-    editor.beginEdit(info.id);
-    while (p.guiParamEvents.available() > 1)
-        editor.updateEdit(info.min_value);
-    editor.endEdit();
-    expect(p.guiParamEvents.available() == 0, "gesture end has reserved queue capacity");
-    output.limit = 0;
-    paramsFlush(&p.plugin, nullptr, &output.events);
-    setParam(p, info.id, info.max_value);
-    output.limit = 1000000;
-    paramsFlush(&p.plugin, nullptr, &output.events);
-    expect(getParam(p, info.id) == info.max_value,
-        "deferred notifications cannot overwrite newer host values");
-    expect(output.complete(), "host backpressure preserves balanced gestures");
-    editor.perform(info.id, original);
-    paramsFlush(&p.plugin, nullptr, &output.events);
+    if (hasParameters) {
+        paramsGetInfo(&p.plugin, 0, &info);
+        const auto original = getParam(p, info.id);
+        editor.beginEdit(info.id);
+        while (p.guiParamEvents.available() > 1)
+            editor.updateEdit(info.min_value);
+        editor.endEdit();
+        expect(p.guiParamEvents.available() == 0, "gesture end has reserved queue capacity");
+        output.limit = 0;
+        paramsFlush(&p.plugin, nullptr, &output.events);
+        setParam(p, info.id, info.max_value);
+        output.limit = 1000000;
+        paramsFlush(&p.plugin, nullptr, &output.events);
+        expect(getParam(p, info.id) == info.max_value,
+            "deferred notifications cannot overwrite newer host values");
+        expect(output.complete(), "host backpressure preserves balanced gestures");
+        editor.perform(info.id, original);
+        paramsFlush(&p.plugin, nullptr, &output.events);
+    }
     expect(activate(&p.plugin, 48000., 1, 64), "audio activation");
     startProcessing(&p.plugin);
     std::vector<std::vector<float>> inputs(kInputChannels, std::vector<float>(64, .001f)),
@@ -307,7 +311,8 @@ void run(rnbo_gui::Editor& editor, Plugin& p)
         std::this_thread::yield();
     sourceImport(p);
     for (unsigned i = 0; i < 80; ++i) {
-        editor.perform(info.id, i % 2 ? info.min_value : info.max_value);
+        if (hasParameters)
+            editor.perform(info.id, i % 2 ? info.min_value : info.max_value);
         if (i % 20 == 0)
             render(editor, "concurrent-playback");
     }

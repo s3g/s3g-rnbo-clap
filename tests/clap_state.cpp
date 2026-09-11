@@ -126,12 +126,13 @@ int main(int argc, char** argv)
         plugin->get_extension(plugin, CLAP_EXT_STATE));
     const auto* params = static_cast<const clap_plugin_params_t*>(
         plugin->get_extension(plugin, CLAP_EXT_PARAMS));
-    if (!state || !params || params->count(plugin) == 0u) {
+    if (!state || !params) {
         std::cerr << "missing state or parameter extension\n";
         return finish(1);
     }
 
     clap_param_info_t info {};
+    const bool hasParameters = params->count(plugin) > 0u;
     bool found = false;
     for (uint32_t i = 0; i < params->count(plugin); ++i) {
         if (params->get_info(plugin, i, &info) && info.max_value > info.min_value) {
@@ -140,7 +141,7 @@ int main(int argc, char** argv)
         }
     }
     double original = 0.0;
-    if (!found || !params->get_value(plugin, info.id, &original)) {
+    if (hasParameters && (!found || !params->get_value(plugin, info.id, &original))) {
         std::cerr << "missing mutable parameter\n";
         return finish(1);
     }
@@ -153,30 +154,32 @@ int main(int argc, char** argv)
         return finish(1);
     }
 
-    const double changed = std::fabs(original - info.min_value) > 1.0e-9
-        ? info.min_value : info.max_value;
-    InputEvents input;
-    input.events.ctx = nullptr;
-    input.events.size = eventCount;
-    input.events.get = eventGet;
-    input.value.header.size = sizeof(input.value);
-    input.value.header.time = 0u;
-    input.value.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-    input.value.header.type = CLAP_EVENT_PARAM_VALUE;
-    input.value.param_id = info.id;
-    input.value.cookie = info.cookie;
-    input.value.note_id = -1;
-    input.value.port_index = -1;
-    input.value.channel = -1;
-    input.value.key = -1;
-    input.value.value = changed;
-    params->flush(plugin, &input.events, nullptr);
+    if (hasParameters) {
+        const double changed
+            = std::fabs(original - info.min_value) > 1.0e-9 ? info.min_value : info.max_value;
+        InputEvents input;
+        input.events.ctx = nullptr;
+        input.events.size = eventCount;
+        input.events.get = eventGet;
+        input.value.header.size = sizeof(input.value);
+        input.value.header.time = 0u;
+        input.value.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        input.value.header.type = CLAP_EVENT_PARAM_VALUE;
+        input.value.param_id = info.id;
+        input.value.cookie = info.cookie;
+        input.value.note_id = -1;
+        input.value.port_index = -1;
+        input.value.channel = -1;
+        input.value.key = -1;
+        input.value.value = changed;
+        params->flush(plugin, &input.events, nullptr);
 
-    double mutated = 0.0;
-    if (!params->get_value(plugin, info.id, &mutated)
-        || std::fabs(mutated - original) < 1.0e-9) {
-        std::cerr << "parameter mutation failed\n";
-        return finish(1);
+        double mutated = 0.0;
+        if (!params->get_value(plugin, info.id, &mutated)
+            || std::fabs(mutated - original) < 1.0e-9) {
+            std::cerr << "parameter mutation failed\n";
+            return finish(1);
+        }
     }
 
     saved.cursor = 0u;
@@ -187,8 +190,8 @@ int main(int argc, char** argv)
         return finish(1);
     }
     double restored = 0.0;
-    if (!params->get_value(plugin, info.id, &restored)
-        || std::fabs(restored - original) > 1.0e-6) {
+    if (hasParameters && (!params->get_value(plugin, info.id, &restored)
+        || std::fabs(restored - original) > 1.0e-6)) {
         std::cerr << "state round trip did not restore the parameter\n";
         return finish(1);
     }
