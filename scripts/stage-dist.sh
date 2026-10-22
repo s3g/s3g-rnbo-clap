@@ -120,6 +120,12 @@ cp "$installer" "$staging/Install s3g-rnbo-clap CLAPs.command"
 chmod 755 "$staging/Install s3g-rnbo-clap CLAPs.command"
 cp "$repo_root/LICENSE" "$staging/LICENSE.txt"
 cp "$repo_root/THIRD_PARTY_NOTICES.md" "$staging/THIRD_PARTY_NOTICES.md"
+build_identity="$build_dir/rnbo-build-identity.txt"
+if [[ ! -f "$build_identity" ]]; then
+  echo "Missing RNBO build identity: $build_identity" >&2
+  exit 1
+fi
+cp "$build_identity" "$staging/rnbo-build-identity.txt"
 
 git_revision="$(git -C "$repo_root" rev-parse HEAD)"
 git_status="clean"
@@ -133,6 +139,9 @@ Source status: $git_status
 CMake configuration: Release
 CMake project version: $project_version
 Bundle count: ${#bundles[@]}
+
+Build identity:
+$(sed 's/^/  /' "$build_identity")
 EOF
 
 cat > "$staging/README.txt" <<EOF

@@ -233,7 +233,14 @@ note input port and forwards incoming CLAP MIDI/note events to RNBO MIDI port
 0 while preserving MIDI channel numbers for RNBO/Max `notein` and `ctlin`
 objects. For example, MIDI channel 5 from the host reaches `notein 5` inside
 RNBO. Instrument builds also show a small MIDI activity indicator in the GUI
-top bar.
+top bar. The MIDI dialect regression covers raw three-byte MIDI, CLAP note
+events, note-off and zero-velocity note-on behavior, channel preservation,
+event-size validation, and rejection of undeclared input ports.
+
+`rnbo-build-identity.txt` records the RNBO export hash, pinned VSTGUI revision,
+and the exact sibling `s3g-dsp` revision and clean/dirty state used for the
+shared GUI foundation. Staged packages retain this file in addition to their
+human-readable build provenance.
 
 The `LOAD` button opens the native platform file picker and loads the selected audio file
 into an RNBO external data reference named `src`. The GUI reports the loaded

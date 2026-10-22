@@ -100,6 +100,36 @@ else()
   set(S3G_RNBO_EFFECTIVE_PLUGIN_ID "org.s3g.s3g-rnbo-clap.${S3G_RNBO_PLUGIN_ID_SUFFIX}")
 endif()
 
+set(S3G_DSP_SOURCE_REVISION "unknown")
+set(S3G_DSP_SOURCE_STATUS "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND AND IS_DIRECTORY "${S3G_DSP_DIR}")
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" -C "${S3G_DSP_DIR}" rev-parse HEAD
+    RESULT_VARIABLE S3G_DSP_REVISION_RESULT
+    OUTPUT_VARIABLE S3G_DSP_REVISION_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+  if(S3G_DSP_REVISION_RESULT EQUAL 0
+      AND NOT S3G_DSP_REVISION_OUTPUT STREQUAL "")
+    set(S3G_DSP_SOURCE_REVISION "${S3G_DSP_REVISION_OUTPUT}")
+    execute_process(
+      COMMAND "${GIT_EXECUTABLE}" -C "${S3G_DSP_DIR}" status --porcelain
+        --untracked-files=no
+      RESULT_VARIABLE S3G_DSP_STATUS_RESULT
+      OUTPUT_VARIABLE S3G_DSP_STATUS_OUTPUT
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
+    if(S3G_DSP_STATUS_RESULT EQUAL 0)
+      if(S3G_DSP_STATUS_OUTPUT)
+        set(S3G_DSP_SOURCE_STATUS "dirty")
+      else()
+        set(S3G_DSP_SOURCE_STATUS "clean")
+      endif()
+    endif()
+  endif()
+endif()
+
 add_executable(s3g_rnbo_smoke tests/smoke.cpp)
 target_include_directories(s3g_rnbo_smoke PRIVATE src)
 
@@ -186,7 +216,7 @@ if(S3G_BUILD_CLAP)
     file(SHA256 "${S3G_RNBO_PATCH_SOURCE}" rnbo_source_hash)
   endif()
   file(GENERATE OUTPUT "${PROJECT_BINARY_DIR}/rnbo-build-identity.txt" CONTENT
-    "id=${S3G_RNBO_EFFECTIVE_PLUGIN_ID}\nname=${S3G_RNBO_DERIVED_PLUGIN_NAME}\nslug=${S3G_RNBO_DERIVED_PLUGIN_SLUG}\nversion=${PROJECT_VERSION}\nkind=${S3G_RNBO_PLUGIN_KIND}\ninputs=${S3G_RNBO_INPUT_CHANNELS}\noutputs=${S3G_RNBO_OUTPUT_CHANNELS}\nexport_sha256=${rnbo_source_hash}\nvstgui=${S3G_VSTGUI_GIT_TAG}\n")
+    "id=${S3G_RNBO_EFFECTIVE_PLUGIN_ID}\nname=${S3G_RNBO_DERIVED_PLUGIN_NAME}\nslug=${S3G_RNBO_DERIVED_PLUGIN_SLUG}\nversion=${PROJECT_VERSION}\nkind=${S3G_RNBO_PLUGIN_KIND}\ninputs=${S3G_RNBO_INPUT_CHANNELS}\noutputs=${S3G_RNBO_OUTPUT_CHANNELS}\nexport_sha256=${rnbo_source_hash}\nvstgui=${S3G_VSTGUI_GIT_TAG}\ns3g_dsp_revision=${S3G_DSP_SOURCE_REVISION}\ns3g_dsp_status=${S3G_DSP_SOURCE_STATUS}\n")
 
   target_include_directories(s3g_rnbo_test_clap PRIVATE
     ${S3G_CLAP_INCLUDE_DIR}
@@ -247,6 +277,14 @@ if(S3G_BUILD_CLAP)
       VERBATIM)
   endif()
 
+  if(BUILD_TESTING)
+    add_executable(s3g_rnbo_midi_event_test tests/midi_event.cpp)
+    target_include_directories(s3g_rnbo_midi_event_test PRIVATE
+      ${S3G_CLAP_INCLUDE_DIR}
+      src
+    )
+    add_test(NAME s3g_rnbo_midi_event COMMAND s3g_rnbo_midi_event_test)
+  endif()
   if(BUILD_TESTING AND UNIX)
     add_executable(s3g_rnbo_clap_state_smoke tests/clap_state.cpp)
     target_include_directories(s3g_rnbo_clap_state_smoke PRIVATE

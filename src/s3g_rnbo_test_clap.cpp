@@ -1,5 +1,6 @@
 #include "s3g_rnbo_fallback.h"
 #include "s3g_rnbo_audio_file.h"
+#include "s3g_rnbo_midi.h"
 #if defined(S3G_RNBO_VSTGUI)
 #include "s3g_clap_vstgui.h"
 #include "s3g_clap_gui_param_queue.h"
@@ -564,26 +565,19 @@ void readEvents(Plugin& p, const clap_input_events_t* in)
     for (uint32_t i = 0; i < n; ++i) {
         const clap_event_header_t* ev = in->get(in, i);
         if (!ev || ev->space_id != CLAP_CORE_EVENT_SPACE_ID) continue;
-        if (ev->type == CLAP_EVENT_PARAM_VALUE) {
+        if (ev->type == CLAP_EVENT_PARAM_VALUE
+            && ev->size >= sizeof(clap_event_param_value_t)) {
             const auto* param = reinterpret_cast<const clap_event_param_value_t*>(ev);
             setParam(p, param->param_id, param->value);
         }
 #if S3G_HAS_RNBO_EXPORT
-        else if (ev->type == CLAP_EVENT_MIDI) {
-            const auto* midi = reinterpret_cast<const clap_event_midi_t*>(ev);
-            addRnboMidiEvent(p, ev->time, midi->data, 3);
-        } else if (ev->type == CLAP_EVENT_NOTE_ON || ev->type == CLAP_EVENT_NOTE_OFF || ev->type == CLAP_EVENT_NOTE_CHOKE) {
-            const auto* note = reinterpret_cast<const clap_event_note_t*>(ev);
-            const int channel = std::clamp(static_cast<int>(note->channel), 0, 15);
-            const int key = std::clamp(static_cast<int>(note->key), 0, 127);
-            const bool on = ev->type == CLAP_EVENT_NOTE_ON && note->velocity > 0.0;
-            uint8_t data[3] {
-                static_cast<uint8_t>((on ? 0x90 : 0x80) | channel),
-                static_cast<uint8_t>(key),
-                static_cast<uint8_t>(std::clamp(static_cast<int>(std::lround(note->velocity * 127.0)), 0, 127))
-            };
-            if (!on) data[2] = 0;
-            addRnboMidiEvent(p, ev->time, data, 3);
+        else {
+            s3g::rnbo_clap::MidiMessage message;
+            if (s3g::rnbo_clap::decodeMidiEvent(ev, message)) {
+                addRnboMidiEvent(p, message.sampleOffset,
+                    message.data.data(),
+                    static_cast<RNBO::Index>(message.data.size()));
+            }
         }
 #endif
     }
